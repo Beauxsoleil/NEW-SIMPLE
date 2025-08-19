@@ -248,7 +248,6 @@ public enum StripesForSkillsFiller {
 
     private static func safeFieldName(_ ann: PDFAnnotation) -> String {
         if let n = ann.fieldName, !n.isEmpty { return n }
-        if let n = ann.value(forAnnotationKey: .fieldName) as? String, !n.isEmpty { return n }
         if let n = ann.value(forAnnotationKey: PDFAnnotationKey(rawValue: "T")) as? String, !n.isEmpty { return n }
         return ""
     }
