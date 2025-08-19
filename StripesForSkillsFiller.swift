@@ -224,12 +224,14 @@ public enum StripesForSkillsFiller {
     /// Find the Y (page coords) of the nearest marker **below** a given Y.
     /// We treat any following Phase header or “ACFT” label as a stop.
     private static func nextMarkerY(below y: CGFloat, on page: PDFPage) -> CGFloat? {
-        let candidates = (selections(in: page, token: "STRM Red Phase")
-                          + selections(in: page, token: "STRM White Phase")
-                          + selections(in: page, token: "ACFT"))
-            .map { $0.bounds(for: page).minY }
-            .filter { $0 < y }
-            .sorted(by: >)
+        // Breaking the chain into steps keeps type-checking fast and clear.
+        let red = selections(in: page, token: "STRM Red Phase")
+        let white = selections(in: page, token: "STRM White Phase")
+        let acft = selections(in: page, token: "ACFT")
+
+        let markers = red + white + acft
+        let ys = markers.map { $0.bounds(for: page).minY }
+        let candidates = ys.filter { $0 < y }.sorted(by: >)
         return candidates.first
     }
 
