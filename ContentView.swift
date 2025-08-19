@@ -1817,14 +1817,14 @@ struct SASDetailView: View {
                 Button("Fill & Share Stripes for Skills") {
                     do {
                         if let url = Bundle.main.url(forResource: "BLANK STRIPES FOR SKILLS copy", withExtension: "pdf") {
-                            let data = StripesForSkillsData(
-                                applicantName: applicant.fullName,
+                            let input = SFSInput(
+                                applicantFullName: applicant.fullName,
                                 recruiterName: store.settings.recruiterName,
                                 recruiterInitials: store.settings.recruiterInitials,
                                 drill1: applicant.drillDate1,
                                 drill2: applicant.drillDate2
                             )
-                            let out = try StripesForSkillsFiller.fill(templateURL: url, data: data)
+                            let out = try StripesForSkillsFiller.fill(templateURL: url, input: input)
                             stripesURL = out
                             showStripesShare = true
                         } else {
