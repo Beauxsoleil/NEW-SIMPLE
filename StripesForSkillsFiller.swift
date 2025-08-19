@@ -166,17 +166,21 @@ public enum StripesForSkillsFiller {
                     drawText(d2, at: CGPoint(x: r.maxX + 8, y: r.minY), font: big, cg: cg)
                 }
 
-                // --- Fill entire Red section down to next marker ---
+                // --- Top “Required Task” block (4 rows) → Red ---
+                fillRequiredTasksTopBlock(on: page, redValue: redText, font: small, cg: cg)
+
+                // --- Fill entire Red sections down to next marker ---
                 for anchor in selections(in: page, token: "STRM Red Phase") {
+                    // anchor line itself is usually already stamped by AcroForm path; we fill below it
                     fillPhaseSection(from: anchor, value: redText, on: page, font: small, cg: cg)
                 }
 
-                // --- Fill entire White section down to next marker ---
+                // --- Fill entire White sections down to next marker ---
                 for anchor in selections(in: page, token: "STRM White Phase") {
                     fillPhaseSection(from: anchor, value: whiteText, on: page, font: small, cg: cg)
                 }
 
-                // --- ACFT rows always use White values ---
+                // --- ACFT rows always use White ---
                 fillACFTRows(on: page, value: whiteText, font: small, cg: cg)
             }
         }
@@ -184,7 +188,7 @@ public enum StripesForSkillsFiller {
         return outURL
     }
 
-    // MARK: - Overlay helpers (replace the old ones)
+    // MARK: - Overlay helpers (fixed + expanded)
 
     /// Draw text at a point.
     private static func drawText(_ text: String, at p: CGPoint, font: UIFont, cg: CGContext) {
@@ -196,7 +200,7 @@ public enum StripesForSkillsFiller {
         (text as NSString).draw(at: p, withAttributes: attrs)
     }
 
-    /// First matching token on page (optionally constrained to top fraction).
+    /// First matching token on page (optionally constrained to top fraction of page height).
     private static func firstToken(_ token: String, on page: PDFPage, topFraction: CGFloat? = nil) -> PDFSelection? {
         guard let doc = page.document else { return nil }
         let hits = doc.findString(token, withOptions: .caseInsensitive)
@@ -217,48 +221,49 @@ public enum StripesForSkillsFiller {
         return doc.findString(token, withOptions: .caseInsensitive).filter { $0.pages.contains(page) }
     }
 
-    /// Find the Y of the next *marker* (another phase header or an ACFT label) below a given Y.
+    /// Find the Y (page coords) of the nearest marker **below** a given Y.
+    /// We treat any following Phase header or “ACFT” label as a stop.
     private static func nextMarkerY(below y: CGFloat, on page: PDFPage) -> CGFloat? {
         let candidates = (selections(in: page, token: "STRM Red Phase")
                           + selections(in: page, token: "STRM White Phase")
                           + selections(in: page, token: "ACFT"))
             .map { $0.bounds(for: page).minY }
-            .filter { $0 > y }
-            .sorted()
+            .filter { $0 < y }
+            .sorted(by: >)
         return candidates.first
     }
 
-    /// Fill a vertical section starting at a phase header, stepping one row at a time until the next marker.
-    /// This stamps the same `value` on each line’s Date/Initials columns.
+    /// Fill a vertical section starting at a phase header, stepping one row at a time
+    /// until the next marker or page bottom. Each line gets the same `value`.
     private static func fillPhaseSection(from anchor: PDFSelection,
                                          value: String,
                                          on page: PDFPage,
                                          font: UIFont,
                                          cg: CGContext)
     {
+        guard !value.isEmpty else { return }
+
         let pageBounds = page.bounds(for: .mediaBox)
         let r = anchor.bounds(for: page)
 
-        // Tune these three numbers if your template changes slightly.
-        let lineHeight: CGFloat = 16.0     // vertical distance between rows
-        let startY      = r.midY - 4       // first row baseline near the header line
-        let rightDateX  = pageBounds.maxX - 100.0
-        let rightInitX  = pageBounds.maxX - 160.0
+        // Tune these if your template spacing shifts slightly.
+        let lineHeight: CGFloat = 16.0     // vertical distance between consecutive rows
+        let startY      = r.midY - 4       // baseline around the header line
+        let stopY       = nextMarkerY(below: startY, on: page) ?? (pageBounds.minY + 72)
 
-        let stopY = nextMarkerY(below: r.minY - 1, on: page) ?? (pageBounds.minY + 80)
+        // Right-side columns (approx). Adjust if your template columns move.
+        let rightInitX: CGFloat = pageBounds.maxX - 160.0
+        // let rightDateX: CGFloat = pageBounds.maxX - 100.0  // (use if/when you separate date vs initials)
 
-        var y = startY
-        while y > stopY + 2 {
-            // If you want to split value like "YYYYMMDD / AB" into two columns, do it here.
-            // Default: draw the combined string at the Initials column (left of the pair).
+        var y = startY - lineHeight // begin one row below the header
+        while y >= stopY {
+            // Currently we print combined "YYYYMMDD / AB" at initials column.
             drawText(value, at: CGPoint(x: rightInitX, y: y), font: font, cg: cg)
-            // If you later separate, draw date at rightDateX, initials at rightInitX.
-
             y -= lineHeight
         }
     }
 
-    /// Stamp White‑phase date/initials on every ACFT row.
+    /// Stamp White-phase value on every ACFT row.
     private static func fillACFTRows(on page: PDFPage, value: String, font: UIFont, cg: CGContext) {
         guard !value.isEmpty else { return }
         let pageBounds = page.bounds(for: .mediaBox)
@@ -278,6 +283,26 @@ public enum StripesForSkillsFiller {
                 let r = sel.bounds(for: page)
                 drawText(value, at: CGPoint(x: r.maxX + 8, y: r.minY + yNudge), font: font, cg: cg)
                 return
+            }
+        }
+    }
+
+    /// Stamp the 4 “Required Task” rows (top block) with the Red value.
+    private static func fillRequiredTasksTopBlock(on page: PDFPage, redValue: String, font: UIFont, cg: CGContext) {
+        guard !redValue.isEmpty else { return }
+        let items = [
+            "Esatblish Bank Account",   // (typo preserved from the form text)
+            "Start Direct Deposit",
+            "Set up AKO Account",
+            "Set up MyPay Account"
+        ]
+        let pageBounds = page.bounds(for: .mediaBox)
+        let x = pageBounds.maxX - 160.0
+        for token in items {
+            if let sel = selection(in: page, token: token) {
+                let r = sel.bounds(for: page)
+                let y = r.midY - 4
+                drawText(redValue, at: CGPoint(x: x, y: y), font: font, cg: cg)
             }
         }
     }
