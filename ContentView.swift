@@ -1789,6 +1789,8 @@ struct SASDetailView: View {
     private let notif = NotificationService()
     @State private var shareURL: URL?
     @State private var showShare = false
+    @State private var stripesURL: URL?
+    @State private var showStripesShare = false
 
     var body: some View {
         Form {
@@ -1811,6 +1813,28 @@ struct SASDetailView: View {
                     }
                 }
             }
+            Section("Stripes for Skills PDF") {
+                Button("Fill & Share Stripes for Skills") {
+                    do {
+                        if let url = Bundle.main.url(forResource: "BLANK STRIPES FOR SKILLS copy", withExtension: "pdf") {
+                            let input = SFSInput(
+                                applicantFullName: applicant.fullName,
+                                recruiterName: store.settings.recruiterName,
+                                recruiterInitials: store.settings.recruiterInitials,
+                                drill1: applicant.drillDate1,
+                                drill2: applicant.drillDate2
+                            )
+                            let out = try StripesForSkillsFiller.fill(templateURL: url, input: input)
+                            stripesURL = out
+                            showStripesShare = true
+                        } else {
+                            print("Template PDF not found in bundle")
+                        }
+                    } catch {
+                        print("Stripes PDF error: \(error)")
+                    }
+                }
+            }
         }
         .navigationTitle(applicant.fullName)
         .onChange(of: applicant.sasReminder) { value in
@@ -1829,6 +1853,9 @@ struct SASDetailView: View {
         }
         .sheet(isPresented: $showShare) {
             if let url = shareURL { ShareSheet(activityItems: [url]) }
+        }
+        .sheet(isPresented: $showStripesShare) {
+            if let url = stripesURL { ShareSheet(activityItems: [url]) }
         }
     }
 
