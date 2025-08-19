@@ -9,6 +9,7 @@
 //  - Top Date:  Second drill date
 //  - All "STRM Red Phase":   First drill date + recruiter initials
 //  - All "STRM White Phase": Second drill date + recruiter initials
+//  - All "ACFT" rows:       Second drill date + recruiter initials
 //  - Signature lines untouched
 //
 //  Usage (example):
@@ -74,7 +75,7 @@ public enum StripesForSkillsFiller {
     @discardableResult
     private static func fillAcroFormIfPossible(in doc: PDFDocument, input: SFSInput) -> Bool {
         var wrote = false
-        let df = DateFormatter(); df.dateStyle = .short
+        let df = DateFormatter(); df.dateFormat = "yyyyMMdd"
         let d1 = input.drill1.map { df.string(from: $0) } ?? ""
         let d2 = input.drill2.map { df.string(from: $0) } ?? ""
 
@@ -118,7 +119,7 @@ public enum StripesForSkillsFiller {
 
     /// Draws original pages and overlays the values anchored to page text tokens.
     private static func renderWithOverlays(from doc: PDFDocument, input: SFSInput, outURL: URL) throws -> URL {
-        let df = DateFormatter(); df.dateStyle = .short
+        let df = DateFormatter(); df.dateFormat = "yyyyMMdd"
         let d1 = input.drill1.map { df.string(from: $0) } ?? ""
         let d2 = input.drill2.map { df.string(from: $0) } ?? ""
         let topName  = "PVT \(input.applicantFullName)"
@@ -165,64 +166,27 @@ public enum StripesForSkillsFiller {
                     drawText(d2, at: CGPoint(x: r.maxX + 8, y: r.minY), font: big, cg: cg)
                 }
 
-                // --- Phase rows (anchor each line & draw near the right margin) ---
-                fillPhaseLines(on: page,
-                               contains: "STRM Red Phase",
-                               value: redText,
-                               font: small,
-                               cg: cg)
+                // --- Fill entire Red section down to next marker ---
+                for anchor in selections(in: page, token: "STRM Red Phase") {
+                    fillPhaseSection(from: anchor, value: redText, on: page, font: small, cg: cg)
+                }
 
-                fillPhaseLines(on: page,
-                               contains: "STRM White Phase",
-                               value: whiteText,
-                               font: small,
-                               cg: cg)
+                // --- Fill entire White section down to next marker ---
+                for anchor in selections(in: page, token: "STRM White Phase") {
+                    fillPhaseSection(from: anchor, value: whiteText, on: page, font: small, cg: cg)
+                }
+
+                // --- ACFT rows always use White values ---
+                fillACFTRows(on: page, value: whiteText, font: small, cg: cg)
             }
         }
 
         return outURL
     }
 
-    // MARK: - Overlay helpers
+    // MARK: - Overlay helpers (replace the old ones)
 
-    /// Find first match for a token near the top area (guards against other dates/signature regions).
-    private static func firstToken(_ token: String, on page: PDFPage, topFraction: CGFloat) -> PDFSelection? {
-        guard let doc = page.document else { return nil }
-        let hits = doc.findString(token, withOptions: .caseInsensitive)
-        let pageH = page.bounds(for: .mediaBox).height
-        return hits.first(where: { $0.pages.contains(page) && $0.bounds(for: page).minY <= pageH * topFraction })
-    }
-
-    private static func overlayRight(ofAnyToken tokens: [String], on page: PDFPage, yNudge: CGFloat, draw value: String, font: UIFont, cg: CGContext) {
-        guard !value.isEmpty else { return }
-        for t in tokens {
-            guard let sel = selection(in: page, token: t) else { continue }
-            let r = sel.bounds(for: page)
-            drawText(value, at: CGPoint(x: r.maxX + 8, y: r.minY + yNudge), font: font, cg: cg)
-            return
-        }
-    }
-
-    private static func fillPhaseLines(on page: PDFPage, contains marker: String, value: String, font: UIFont, cg: CGContext) {
-        guard !value.isEmpty else { return }
-        let anchors = selections(in: page, token: marker)
-        let pageBounds = page.bounds(for: .mediaBox)
-        // Write toward the right column; tweak these X offsets if your template changes.
-        let initialsX = pageBounds.maxX - 160.0
-        let dateX     = pageBounds.maxX - 100.0
-
-        for s in anchors {
-            let r = s.bounds(for: page)
-            let y = r.midY - 4
-            // Fill as "Initials / Date of Completion" pair (initials left, date right)
-            // If you store initials separate, you could split here. We keep combined 'value'.
-            // Expect `value` like "05/10/25 / JS" or "05/10/25 JS", both OK.
-            // For stricter separation, parse and draw pieces at the two columns.
-            drawText(value, at: CGPoint(x: initialsX, y: y), font: font, cg: cg)
-            _ = dateX // placeholder for separate date column if needed later
-        }
-    }
-
+    /// Draw text at a point.
     private static func drawText(_ text: String, at p: CGPoint, font: UIFont, cg: CGContext) {
         guard !text.isEmpty else { return }
         let attrs: [NSAttributedString.Key: Any] = [
@@ -232,16 +196,90 @@ public enum StripesForSkillsFiller {
         (text as NSString).draw(at: p, withAttributes: attrs)
     }
 
+    /// First matching token on page (optionally constrained to top fraction).
+    private static func firstToken(_ token: String, on page: PDFPage, topFraction: CGFloat? = nil) -> PDFSelection? {
+        guard let doc = page.document else { return nil }
+        let hits = doc.findString(token, withOptions: .caseInsensitive)
+        if let top = topFraction {
+            let h = page.bounds(for: .mediaBox).height
+            return hits.first(where: { $0.pages.contains(page) && $0.bounds(for: page).minY <= h * top })
+        }
+        return hits.first(where: { $0.pages.contains(page) })
+    }
+
     private static func selection(in page: PDFPage, token: String) -> PDFSelection? {
         guard let doc = page.document else { return nil }
-        let results = doc.findString(token, withOptions: .caseInsensitive)
-        return results.first { $0.pages.contains(page) }
+        return doc.findString(token, withOptions: .caseInsensitive).first { $0.pages.contains(page) }
     }
 
     private static func selections(in page: PDFPage, token: String) -> [PDFSelection] {
         guard let doc = page.document else { return [] }
-        let results = doc.findString(token, withOptions: .caseInsensitive)
-        return results.filter { $0.pages.contains(page) }
+        return doc.findString(token, withOptions: .caseInsensitive).filter { $0.pages.contains(page) }
+    }
+
+    /// Find the Y of the next *marker* (another phase header or an ACFT label) below a given Y.
+    private static func nextMarkerY(below y: CGFloat, on page: PDFPage) -> CGFloat? {
+        let candidates = (selections(in: page, token: "STRM Red Phase")
+                          + selections(in: page, token: "STRM White Phase")
+                          + selections(in: page, token: "ACFT"))
+            .map { $0.bounds(for: page).minY }
+            .filter { $0 > y }
+            .sorted()
+        return candidates.first
+    }
+
+    /// Fill a vertical section starting at a phase header, stepping one row at a time until the next marker.
+    /// This stamps the same `value` on each line’s Date/Initials columns.
+    private static func fillPhaseSection(from anchor: PDFSelection,
+                                         value: String,
+                                         on page: PDFPage,
+                                         font: UIFont,
+                                         cg: CGContext)
+    {
+        let pageBounds = page.bounds(for: .mediaBox)
+        let r = anchor.bounds(for: page)
+
+        // Tune these three numbers if your template changes slightly.
+        let lineHeight: CGFloat = 16.0     // vertical distance between rows
+        let startY      = r.midY - 4       // first row baseline near the header line
+        let rightDateX  = pageBounds.maxX - 100.0
+        let rightInitX  = pageBounds.maxX - 160.0
+
+        let stopY = nextMarkerY(below: r.minY - 1, on: page) ?? (pageBounds.minY + 80)
+
+        var y = startY
+        while y > stopY + 2 {
+            // If you want to split value like "YYYYMMDD / AB" into two columns, do it here.
+            // Default: draw the combined string at the Initials column (left of the pair).
+            drawText(value, at: CGPoint(x: rightInitX, y: y), font: font, cg: cg)
+            // If you later separate, draw date at rightDateX, initials at rightInitX.
+
+            y -= lineHeight
+        }
+    }
+
+    /// Stamp White‑phase date/initials on every ACFT row.
+    private static func fillACFTRows(on page: PDFPage, value: String, font: UIFont, cg: CGContext) {
+        guard !value.isEmpty else { return }
+        let pageBounds = page.bounds(for: .mediaBox)
+        let x = pageBounds.maxX - 160.0
+        for sel in selections(in: page, token: "ACFT") {
+            let r = sel.bounds(for: page)
+            let y = r.midY - 4
+            drawText(value, at: CGPoint(x: x, y: y), font: font, cg: cg)
+        }
+    }
+
+    /// Draw `value` to the right of the first matching token (nice for top banner fields).
+    private static func overlayRight(ofAnyToken tokens: [String], on page: PDFPage, yNudge: CGFloat, draw value: String, font: UIFont, cg: CGContext) {
+        guard !value.isEmpty else { return }
+        for t in tokens {
+            if let sel = selection(in: page, token: t) {
+                let r = sel.bounds(for: page)
+                drawText(value, at: CGPoint(x: r.maxX + 8, y: r.minY + yNudge), font: font, cg: cg)
+                return
+            }
+        }
     }
 
     // MARK: - Field name helpers (AcroForm)
