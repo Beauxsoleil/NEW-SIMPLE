@@ -2585,54 +2585,53 @@ struct TroutRunGameView: View {
     let moveTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("Trout Run").font(.headline)
-                Spacer()
-                Button("Close") { dismiss() }
-            }.padding(.horizontal)
+        VStack {
+            Spacer()
+            VStack(spacing: 8) {
+                HStack {
+                    Text("Trout Run").font(.headline)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                }.padding(.horizontal)
 
-            if let msg = message { Text(msg).foregroundStyle(.secondary) }
+                if let msg = message { Text(msg).foregroundStyle(.secondary) }
 
-            GeometryReader { geo in
-                let cell = min(geo.size.width / CGFloat(cols), geo.size.height / CGFloat(rows))
-                ZStack(alignment: .topLeading) {
-                    ForEach(Array(pellets), id: \.self) { p in
-                        Circle().fill(Color.white)
-                            .frame(width: 4, height: 4)
-                            .position(x: CGFloat(p.x) * cell + 0.5 * cell,
-                                      y: CGFloat(p.y) * cell + 0.5 * cell)
+                GeometryReader { geo in
+                    let cell = min(geo.size.width / CGFloat(cols), geo.size.height / CGFloat(rows))
+                    ZStack(alignment: .topLeading) {
+                        ForEach(Array(pellets), id: \.self) { p in
+                            Circle().fill(Color.white)
+                                .frame(width: 4, height: 4)
+                                .position(x: CGFloat(p.x) * cell + 0.5 * cell,
+                                          y: CGFloat(p.y) * cell + 0.5 * cell)
+                        }
+                        ForEach(Array(powers), id: \.self) { p in
+                            Circle().fill(Color.yellow)
+                                .frame(width: 8, height: 8)
+                                .position(x: CGFloat(p.x) * cell + 0.5 * cell,
+                                          y: CGFloat(p.y) * cell + 0.5 * cell)
+                        }
+                        ForEach(sasquatches) { s in
+                            Text("🦧")
+                                .position(x: CGFloat(s.pos.x) * cell + 0.5 * cell,
+                                          y: CGFloat(s.pos.y) * cell + 0.5 * cell)
+                        }
+                        Text("🐟")
+                            .position(x: CGFloat(player.x) * cell + 0.5 * cell,
+                                      y: CGFloat(player.y) * cell + 0.5 * cell)
                     }
-                    ForEach(Array(powers), id: \.self) { p in
-                        Circle().fill(Color.yellow)
-                            .frame(width: 8, height: 8)
-                            .position(x: CGFloat(p.x) * cell + 0.5 * cell,
-                                      y: CGFloat(p.y) * cell + 0.5 * cell)
-                    }
-                    ForEach(sasquatches) { s in
-                        Text("🧍")
-                            .position(x: CGFloat(s.pos.x) * cell + 0.5 * cell,
-                                      y: CGFloat(s.pos.y) * cell + 0.5 * cell)
-                    }
-                    Text("🐟")
-                        .position(x: CGFloat(player.x) * cell + 0.5 * cell,
-                                  y: CGFloat(player.y) * cell + 0.5 * cell)
+                    .frame(width: cell * CGFloat(cols), height: cell * CGFloat(rows))
+                    .background(Color.subtleBG)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .onAppear { reset() }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in move(to: value.location, cellSize: cell) }
+                    )
                 }
-                .frame(width: cell * CGFloat(cols), height: cell * CGFloat(rows))
-                .background(Color.subtleBG)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .onAppear { reset() }
+                .frame(height: 420)
             }
-            .frame(height: 420)
-
-            HStack {
-                Button("◀️") { move(dx: -1, dy: 0) }
-                VStack {
-                    Button("▲") { move(dx: 0, dy: -1) }
-                    Button("▼") { move(dx: 0, dy: 1) }
-                }
-                Button("▶️") { move(dx: 1, dy: 0) }
-            }.font(.title)
+            Spacer()
         }
         .onReceive(moveTimer) { _ in tick() }
     }
@@ -2648,10 +2647,12 @@ struct TroutRunGameView: View {
         poweredTicks = 0
     }
 
-    func move(dx: Int, dy: Int) {
+    func move(to location: CGPoint, cellSize: CGFloat) {
         guard message == nil else { return }
-        player.x = (player.x + dx + cols) % cols
-        player.y = (player.y + dy + rows) % rows
+        let x = min(max(Int(location.x / cellSize), 0), cols - 1)
+        let y = min(max(Int(location.y / cellSize), 0), rows - 1)
+        if x == player.x && y == player.y { return }
+        player = Point(x: x, y: y)
         if powers.remove(player) != nil { poweredTicks = 20 }
         pellets.remove(player)
         checkWin()
