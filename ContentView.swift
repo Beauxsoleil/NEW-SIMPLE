@@ -709,14 +709,17 @@ fileprivate enum ChecklistLexicon {
     static let aliasMap: [String:[String]] = [
         "Social Security Card": ["ssn","ss","ss card","social","social security","social security card"],
         "Birth Certificate": ["bc","birth cert","birth certificate"],
-        "Driver's License": ["dl","driver license","drivers license","driver's license","license"]
+        "Driver's License": ["dl","driver license","drivers license","driver's license","license","driverlicense","driverslicense"]
     ]
     static var canonical: [String] { Array(aliasMap.keys) }
 
     static func canonicalize(_ raw: String) -> String {
-        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleaned = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[-_]", with: " ", options: .regularExpression)
+            .lowercased()
         for (canon, aliases) in aliasMap {
-            if aliases.contains(s) || canon.lowercased() == s { return canon }
+            if aliases.contains(cleaned) || canon.lowercased() == cleaned { return canon }
         }
         return raw
     }
@@ -728,6 +731,16 @@ fileprivate enum ChecklistLexicon {
             if aliases.first(where: { s.contains($0) }) != nil { return canon }
         }
         return nil
+    }
+
+    static func markCollected(title: String, for applicant: inout Applicant) {
+        let canon = canonicalize(title)
+        guard canonical.contains(canon) else { return }
+        if let idx = applicant.checklist.firstIndex(where: { $0.canonicalName == canon }) {
+            applicant.checklist[idx].isCollected = true
+        } else {
+            applicant.checklist.append(.init(canonicalName: canon, isCollected: true))
+        }
     }
 
     static func defaults() -> [ChecklistItem] {
@@ -1394,11 +1407,13 @@ struct ApplicantEditor: View {
                                 do {
                                     let saved = try FileStore.importFile(for: applicant.id, from: tmp)
                                     if let rel = FileStore.relativePath(for: saved) {
+                                        let title = saved.deletingPathExtension().lastPathComponent
                                         applicant.files.append(.init(
-                                            title: saved.deletingPathExtension().lastPathComponent,
+                                            title: title,
                                             note: "Imported from Photos",
                                             filePath: rel
                                         ))
+                                        ChecklistLexicon.markCollected(title: title, for: &applicant)
                                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                     }
                                 } catch { print("Photo import error: \(error)") }
@@ -1421,11 +1436,13 @@ struct ApplicantEditor: View {
                         do {
                             let saved = try FileStore.importFile(for: applicant.id, from: url)
                             if let rel = FileStore.relativePath(for: saved) {
+                                let title = saved.deletingPathExtension().lastPathComponent
                                 applicant.files.append(.init(
-                                    title: saved.deletingPathExtension().lastPathComponent,
+                                    title: title,
                                     note: "",
                                     filePath: rel
                                 ))
+                                ChecklistLexicon.markCollected(title: title, for: &applicant)
                                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             }
                         } catch { print("Import error: \(error)") }
@@ -1582,10 +1599,8 @@ struct ApplicantEditor: View {
                         let saved = try FileStore.importFile(for: applicant.id, from: tmp)
                         if let rel = FileStore.relativePath(for: saved) {
                             applicant.files.append(.init(title: suggestion, note: "", filePath: rel))
+                            ChecklistLexicon.markCollected(title: suggestion, for: &applicant)
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                        if let key = ChecklistLexicon.inferDocKey(text), !applicant.checklist.contains(where: { $0.canonicalName == key }) {
-                            applicant.checklist.append(.init(canonicalName: key, isCollected: true))
                         }
                     } catch { print("Scan import error: \(error)") }
                 }
