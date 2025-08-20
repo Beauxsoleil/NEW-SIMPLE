@@ -54,7 +54,19 @@ enum Equipment: String, CaseIterable, Identifiable {
 }
 
 enum Movement: String {
-    case squat, hinge, horizontalPush, verticalPush, horizontalPull, verticalPull, carry, coreAntiExt, sprint, jump, throw, loadedDrag, run
+    case squat
+    case hinge
+    case horizontalPush
+    case verticalPush
+    case horizontalPull
+    case verticalPull
+    case carry
+    case coreAntiExt
+    case sprint
+    case jump
+    case throwing = "throw"
+    case loadedDrag
+    case run
 }
 
 enum ACFTEvent: String {
@@ -146,7 +158,7 @@ private let EX: [Exercise] = [
              equipment: [.sled], targets: ["posterior chain","anaerobic"],
              acftCarryover: [.sdc], coaching: "Forward lean, rapid turnover."),
     // Throw / Power
-    Exercise(name: "Med‑Ball Overhead Throw", movement: .throw,
+    Exercise(name: "Med‑Ball Overhead Throw", movement: .throwing,
              equipment: [.medball], targets: ["triple extension","power"],
              acftCarryover: [.spt], coaching: "Dip, drive, long arc."),
     Exercise(name: "Broad Jump (standing)", movement: .jump,
@@ -251,7 +263,7 @@ struct GymPlanGenerator {
             conditioning.append("Farmer Carry: 4 x 40m (heavy, 90s rest)")
         case .acftPowerAgility:
             // SPT + SDC day
-            plan(pick({ $0.acftCarryover.contains(.spt) && ($0.movement == .throw || $0.movement == .jump) }, max: 2), scheme: assistScheme, title: "Power — SPT Drills")
+            plan(pick({ $0.acftCarryover.contains(.spt) && ($0.movement == .throwing || $0.movement == .jump) }, max: 2), scheme: assistScheme, title: "Power — SPT Drills")
             plan(pick({ $0.acftCarryover.contains(.sdc) && ($0.movement == .loadedDrag || $0.movement == .sprint) }, max: 2), scheme: assistScheme, title: "Agility — SDC Prep")
             conditioning.append("Sled Drag: 6 x 20m (moderate‑heavy, 90s rest)")
             conditioning.append("Shuttle 5‑10‑5: 4–6 reps (full recovery)")
