@@ -10,7 +10,7 @@
 //  - Checklist with synonyms (SSN/BC/DL/…)
 //  - Per-applicant “Files” metadata (scan/OCR later)
 //  - PDF export grouped by stage, optional logo from Settings
-//  - JSON import/export (merge by UUID)
+//  - JSON import/export (Applicants/Events/Settings merge by UUID)
 //  - Settings with logo picker, theme, thresholds, recruiter info
 //  - Pac-Man style “Trout Run” mini-game (trout vs. Sasquatches)
 //
@@ -826,26 +826,61 @@ final class Store: ObservableObject {
         } catch { print("Settings load error: \(error)") }
     }
 
+    // Whole-app snapshot for JSON round-trips
+    struct ExportEnvelope: Codable {
+        var applicants: [Applicant]
+        var events: [RecruitEvent]
+        var settings: SettingsModel
+    }
+
     // JSON Export/Import
     func exportJSON() throws -> URL {
-        let data = try JSONEncoder().encode(applicants)
+        // Keep events/settings so re-import doesn't lose information
+        let dump = ExportEnvelope(applicants: applicants, events: events, settings: settings)
+        let data = try JSONEncoder().encode(dump)
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ROPS_Applicants_\(Date().yyyymmdd).json")
+            .appendingPathComponent("ROPS_Full_\(Date().yyyymmdd).json")
         try data.write(to: url, options: [.atomic])
         return url
     }
 
-    func importJSON(from url: URL) throws -> (added: Int, updated: Int) {
+    func importJSON(from url: URL) throws -> (appsAdded: Int, appsUpdated: Int, eventsAdded: Int, eventsUpdated: Int) {
         let data = try Data(contentsOf: url)
-        let incoming = try JSONDecoder().decode([Applicant].self, from: data)
-        var dict = Dictionary(uniqueKeysWithValues: applicants.map { ($0.id, $0) })
-        var added = 0, updated = 0
-        for a in incoming {
-            if dict[a.id] == nil { added += 1 } else { updated += 1 }
-            dict[a.id] = a
+        if let dump = try? JSONDecoder().decode(ExportEnvelope.self, from: data) {
+            // Applicants merge by UUID
+            var aDict = Dictionary(uniqueKeysWithValues: applicants.map { ($0.id, $0) })
+            var aAdded = 0, aUpdated = 0
+            for a in dump.applicants {
+                if aDict[a.id] == nil { aAdded += 1 } else { aUpdated += 1 }
+                aDict[a.id] = a
+            }
+            applicants = Array(aDict.values)
+
+            // Events merge by UUID
+            var eDict = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0) })
+            var eAdded = 0, eUpdated = 0
+            for e in dump.events {
+                if eDict[e.id] == nil { eAdded += 1 } else { eUpdated += 1 }
+                eDict[e.id] = e
+            }
+            events = Array(eDict.values)
+
+            // Settings overwrite; user initiated import
+            settings = dump.settings
+
+            return (aAdded, aUpdated, eAdded, eUpdated)
+        } else {
+            // Backward compatibility: older exports were applicants array only
+            let incoming = try JSONDecoder().decode([Applicant].self, from: data)
+            var dict = Dictionary(uniqueKeysWithValues: applicants.map { ($0.id, $0) })
+            var added = 0, updated = 0
+            for a in incoming {
+                if dict[a.id] == nil { added += 1 } else { updated += 1 }
+                dict[a.id] = a
+            }
+            applicants = Array(dict.values)
+            return (added, updated, 0, 0)
         }
-        applicants = Array(dict.values)
-        return (added, updated)
     }
 
     // Logo
@@ -1967,7 +2002,7 @@ struct ReportsView: View {
                             importMessage = "JSON export failed: \(error.localizedDescription)"
                             showImportAlert = true
                         }
-                    } label: { Label("Export Applicants JSON", systemImage: "square.and.arrow.up.on.square") }
+                    } label: { Label("Export Data JSON", systemImage: "square.and.arrow.up.on.square") }
 
                     Button {
                         do {
@@ -1990,10 +2025,10 @@ struct ReportsView: View {
                     } label: { Label("Export Custom Report", systemImage: "doc.badge.gearshape") }
 
                     Button { showImporter = true } label: {
-                        Label("Import Applicants JSON (merge)", systemImage: "square.and.arrow.down.on.square")
+                        Label("Import Data JSON (merge)", systemImage: "square.and.arrow.down.on.square")
                     }
                 } footer: {
-                    Text("PDF is grouped by stage and includes Days-in-Stage. JSON import merges by Applicant UUID.")
+                    Text("PDF grouped by stage; JSON import merges Applicants/Events and updates Settings by UUID.")
                 }
 
                 Section("Snapshot") {
@@ -2014,7 +2049,7 @@ struct ReportsView: View {
                 case .success(let url):
                     do {
                         let r = try store.importJSON(from: url)
-                        importMessage = "Imported: \(r.added) added, \(r.updated) updated."
+                        importMessage = "Imported: \(r.appsAdded) applicants added, \(r.appsUpdated) updated; \(r.eventsAdded) events added, \(r.eventsUpdated) updated."
                         showImportAlert = true
                     } catch {
                         importMessage = "Import failed: \(error.localizedDescription)"
