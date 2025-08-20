@@ -12,7 +12,7 @@
 //  - PDF export grouped by stage, optional logo from Settings
 //  - JSON import/export (merge by UUID)
 //  - Settings with logo picker, theme, thresholds, recruiter info
-//  - Tiny “gator eats 0s” Easter-egg mini-game
+//  - Pac-Man style “Trout Run” mini-game (trout vs. Sasquatches)
 //
 
 import SwiftUI
@@ -2503,7 +2503,7 @@ struct SettingsView: View {
                 notifService.scheduleSASReminder(for: a.id, name: a.fullName, frequency: a.sasFrequency, hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
             }
         }
-        .sheet(isPresented: $showGame) { GatorGameView() }
+        .sheet(isPresented: $showGame) { TroutRunGameView() }
     }
     }
 
@@ -2531,82 +2531,126 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Easter Egg Game (tiny, dependency-free)
+// MARK: - Easter Egg Game (Trout Run)
 
-struct GatorGameView: View {
+struct TroutRunGameView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var gatorX: CGFloat = 0
-    @State private var zeros: [Zero] = []
-    @State private var score = 0
-    @State private var width: CGFloat = 300
-    @State private var height: CGFloat = 400
 
-    struct Zero: Identifiable {
-        let id = UUID()
-        var x: CGFloat
-        var y: CGFloat
-        var speed: CGFloat
-    }
+    struct Point: Hashable { var x: Int; var y: Int }
+    struct Sasquatch: Identifiable { let id = UUID(); var pos: Point }
 
-    let spawnTimer = Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()
-    let fallTimer  = Timer.publish(every: 0.02, on: .main, in: .common).autoconnect()
+    @State private var player = Point(x: 0, y: 0)
+    @State private var sasquatches: [Sasquatch] = []
+    @State private var pellets: Set<Point> = []
+    @State private var powers: Set<Point> = []
+    @State private var poweredTicks = 0
+    @State private var message: String?
+
+    let cols = 10, rows = 12
+    let moveTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Text("Gator Snack Time").font(.headline)
+                Text("Trout Run").font(.headline)
                 Spacer()
                 Button("Close") { dismiss() }
             }.padding(.horizontal)
 
-            Text("Score: \(score)").font(.subheadline).foregroundStyle(.secondary)
+            if let msg = message { Text(msg).foregroundStyle(.secondary) }
 
             GeometryReader { geo in
-                ZStack {
-                    ForEach(zeros) { z in
-                        Text("0").font(.system(size: 18, weight: .bold, design: .monospaced))
-                            .position(x: z.x, y: z.y)
+                let cell = min(geo.size.width / CGFloat(cols), geo.size.height / CGFloat(rows))
+                ZStack(alignment: .topLeading) {
+                    ForEach(Array(pellets), id: \.self) { p in
+                        Circle().fill(Color.white)
+                            .frame(width: 4, height: 4)
+                            .position(x: CGFloat(p.x) * cell + 0.5 * cell,
+                                      y: CGFloat(p.y) * cell + 0.5 * cell)
                     }
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.green)
-                        .frame(width: 60, height: 18)
-                        .overlay(
-                            HStack(spacing: 2) {
-                                Circle().fill(.black).frame(width: 4, height: 4)
-                                Spacer()
-                                Rectangle().fill(.black).frame(width: 10, height: 2)
-                            }.padding(.horizontal, 8)
-                        )
-                        .position(x: gatorX, y: geo.size.height - 30)
-                        .gesture(DragGesture().onChanged { v in
-                            gatorX = max(30, min(geo.size.width - 30, v.location.x))
-                        })
-                        .onAppear {
-                            width = geo.size.width
-                            height = geo.size.height
-                            gatorX = width/2
-                        }
+                    ForEach(Array(powers), id: \.self) { p in
+                        Circle().fill(Color.yellow)
+                            .frame(width: 8, height: 8)
+                            .position(x: CGFloat(p.x) * cell + 0.5 * cell,
+                                      y: CGFloat(p.y) * cell + 0.5 * cell)
+                    }
+                    ForEach(sasquatches) { s in
+                        Text("🧍")
+                            .position(x: CGFloat(s.pos.x) * cell + 0.5 * cell,
+                                      y: CGFloat(s.pos.y) * cell + 0.5 * cell)
+                    }
+                    Text("🐟")
+                        .position(x: CGFloat(player.x) * cell + 0.5 * cell,
+                                  y: CGFloat(player.y) * cell + 0.5 * cell)
                 }
+                .frame(width: cell * CGFloat(cols), height: cell * CGFloat(rows))
                 .background(Color.subtleBG)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                .onAppear { reset() }
             }
             .frame(height: 420)
-            .padding()
+
+            HStack {
+                Button("◀️") { move(dx: -1, dy: 0) }
+                VStack {
+                    Button("▲") { move(dx: 0, dy: -1) }
+                    Button("▼") { move(dx: 0, dy: 1) }
+                }
+                Button("▶️") { move(dx: 1, dy: 0) }
+            }.font(.title)
         }
-        .onReceive(spawnTimer) { _ in spawn() }
-        .onReceive(fallTimer)  { _ in tick()  }
+        .onReceive(moveTimer) { _ in tick() }
     }
 
-    func spawn() {
-        zeros.append(.init(x: CGFloat.random(in: 20...(width-20)), y: 0, speed: CGFloat.random(in: 1.2...2.6)))
-        if zeros.count > 40 { zeros.removeFirst() }
+    func reset() {
+        player = Point(x: cols/2, y: rows/2)
+        pellets = []
+        for x in 0..<cols { for y in 0..<rows { pellets.insert(Point(x: x, y: y)) } }
+        powers = [Point(x: 1, y: 1), Point(x: cols-2, y: rows-2)]
+        pellets.subtract(powers)
+        sasquatches = [Sasquatch(pos: Point(x: 0, y: 0)), Sasquatch(pos: Point(x: cols-1, y: rows-1))]
+        message = nil
+        poweredTicks = 0
     }
+
+    func move(dx: Int, dy: Int) {
+        guard message == nil else { return }
+        player.x = (player.x + dx + cols) % cols
+        player.y = (player.y + dy + rows) % rows
+        if powers.remove(player) != nil { poweredTicks = 20 }
+        pellets.remove(player)
+        checkWin()
+        checkCollisions()
+    }
+
     func tick() {
-        for i in zeros.indices { zeros[i].y += zeros[i].speed }
-        let gy = height - 30
-        zeros.removeAll { z in
-            if abs(z.y - gy) < 14 && abs(z.x - gatorX) < 34 { score += 1; return true }
-            return z.y > height
+        guard message == nil else { return }
+        if poweredTicks > 0 { poweredTicks -= 1 }
+        for i in sasquatches.indices {
+            let dir = Int.random(in: 0..<4)
+            switch dir {
+            case 0: sasquatches[i].pos.x = (sasquatches[i].pos.x + 1) % cols
+            case 1: sasquatches[i].pos.x = (sasquatches[i].pos.x - 1 + cols) % cols
+            case 2: sasquatches[i].pos.y = (sasquatches[i].pos.y + 1) % rows
+            default: sasquatches[i].pos.y = (sasquatches[i].pos.y - 1 + rows) % rows
+            }
         }
+        checkCollisions()
+    }
+
+    func checkCollisions() {
+        for i in sasquatches.indices.reversed() {
+            if sasquatches[i].pos == player {
+                if poweredTicks > 0 {
+                    sasquatches.remove(at: i)
+                } else {
+                    message = "Caught!"
+                }
+            }
+        }
+    }
+
+    func checkWin() {
+        if pellets.isEmpty { message = "You Win!" }
     }
 }
