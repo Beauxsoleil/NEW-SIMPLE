@@ -2528,17 +2528,22 @@ final class WorkStationStore: ObservableObject, Codable {
 struct WorkStationView: View {
     @EnvironmentObject var store: Store
     @StateObject private var ws = WorkStationStore()
+    @State private var showGymPlanner = false
 
     var body: some View {
         NavigationStack {
             List {
                 snippetsSection
                 packSection
+                toolsSection
             }
             .navigationTitle("Work Station")
         }
         .onChange(of: ws.snippets) { _ in ws.persist() }
         .onChange(of: ws.pack) { _ in ws.persist() }
+        .sheet(isPresented: $showGymPlanner) {
+            GymPlannerView()
+        }
     }
 
     var snippetsSection: some View {
@@ -2591,6 +2596,17 @@ struct WorkStationView: View {
                 for i in ws.pack.indices { ws.pack[i].checked = false }
             } label: { Label("Uncheck All", systemImage: "arrow.uturn.backward") }
             .font(.caption)
+        }
+    }
+
+    var toolsSection: some View {
+        Section("Tools") {
+            Button {
+                showGymPlanner = true
+            } label: {
+                Label("Plan Gym Day", systemImage: "figure.strengthtraining.traditional")
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 }
