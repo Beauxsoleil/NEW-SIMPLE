@@ -2628,6 +2628,7 @@ struct TroutRunGameView: View {
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in move(to: value.location, cellSize: cell) }
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .frame(height: 420)
             }
