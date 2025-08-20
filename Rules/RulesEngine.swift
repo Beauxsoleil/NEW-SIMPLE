@@ -2,8 +2,8 @@ import Foundation
 
 struct Rule: Codable {
     var name: String
-    var predicate: SimplePredicate
-    var failHeadline: EligibilityHeadline
+    var predicate: RulePredicate
+    var failHeadline: RuleHeadline
     var chip: String
     var action: String?
 }
@@ -11,8 +11,8 @@ struct Rule: Codable {
 struct RulesEngine: Codable {
     var rules: [Rule]
 
-    func evaluate(applicant: Applicant) -> EligibilityOutcome {
-        var outcome = EligibilityOutcome(headline: .eligible, chips: [], actions: [])
+    func evaluate(applicant: Applicant) -> RuleOutcome {
+        var outcome = RuleOutcome(headline: .eligible, chips: [], actions: [])
         for rule in rules {
             if !rule.predicate.evaluate(applicant: applicant) {
                 outcome.headline = rule.failHeadline

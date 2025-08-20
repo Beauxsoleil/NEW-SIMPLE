@@ -2133,6 +2133,25 @@ struct ReportsView: View {
                         }
                     } label: { Label("Export Custom Report", systemImage: "doc.badge.gearshape") }
 
+                    Button {
+                        let (start, end) = weekRange()
+                        let next7 = store.events.filter { $0.start >= start && $0.start < end }
+                        let text = AIRewriter.weeklySummary(
+                            applicants: store.applicants,
+                            events: next7,
+                            agingWarn: store.settings.aging.warn,
+                            agingDanger: store.settings.aging.danger
+                        )
+                        do {
+                            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Weekly_Summary.txt")
+                            try text.data(using: .utf8)?.write(to: url)
+                            shareURL = url; showShare = true
+                        } catch {
+                            importMessage = "Summary failed: \(error.localizedDescription)"
+                            showImportAlert = true
+                        }
+                    } label: { Label("Export Weekly Summary", systemImage: "doc.text.magnifyingglass") }
+
                     NavigationLink("Custom Report Settings") {
                         CustomReportSettingsView(options: $store.settings.customReport)
                     }
@@ -2507,6 +2526,7 @@ final class WorkStationStore: ObservableObject, Codable {
 }
 
 struct WorkStationView: View {
+    @EnvironmentObject var store: Store
     @StateObject private var ws = WorkStationStore()
 
     var body: some View {
@@ -2527,8 +2547,25 @@ struct WorkStationView: View {
                 NavigationLink(s.name) {
                     Form {
                         TextField("Title", text: $s.name)
-                        TextEditor(text: $s.body)
-                            .frame(minHeight: 200)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Menu("Rewrite") {
+                                    Button("Concise") { s.body = AIRewriter.rewrite(s.body, mode: .concise) }
+                                    Button("Friendly") { s.body = AIRewriter.rewrite(s.body, mode: .friendly) }
+                                    Button("Formal") { s.body = AIRewriter.rewrite(s.body, mode: .formal) }
+                                    Button("Bulletize") { s.body = AIRewriter.rewrite(s.body, mode: .bulletize) }
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Fill Placeholders") {
+                                    s.body = AIRewriter.fill(template: s.body, applicant: nil, settings: store.settings)
+                                }
+                                .font(.caption)
+                            }
+                            TextEditor(text: $s.body).frame(minHeight: 200)
+                        }
+
                         ShareLink("Share Snippet", item: s.body)
                     }
                     .navigationTitle("Edit Snippet")
