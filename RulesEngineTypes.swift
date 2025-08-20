@@ -4,6 +4,16 @@
 
 import Foundation
 
+// MARK: - Applicant flag types
+
+enum MedicalFlag: String, Codable {
+    case asthma, colorBlind, depression, surgeryHistory
+}
+
+enum LegalDisqualifier: String, Codable {
+    case felony, dui, domesticViolence, drugUse
+}
+
 // MARK: - Eligibility presentation types
 
 enum EligibilityHeadline: String, Codable {
