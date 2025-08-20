@@ -6,7 +6,7 @@ extension Store {
         (try? appSupportDir())!.appendingPathComponent("eligibility_rules.json")
     }
 
-    func evaluateEligibility(for applicant: Applicant) -> EligibilityOutcome {
+    func evaluateEligibility(for applicant: Applicant) -> RuleOutcome {
         let engine = loadRulesEngineOrDefaults()
         return engine.evaluate(applicant: applicant)
     }

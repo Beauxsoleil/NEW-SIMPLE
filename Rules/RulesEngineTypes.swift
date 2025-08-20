@@ -6,15 +6,15 @@ import Foundation
 
 // MARK: - Eligibility presentation types
 
-enum EligibilityHeadline: String, Codable {
+enum RuleHeadline: String, Codable {
     case eligible = "Eligible"
     case needsWaiver = "Needs Waiver"
     case ineligible = "Ineligible"
     case needsDocs = "Needs Documents"
 }
 
-struct EligibilityOutcome: Codable {
-    var headline: EligibilityHeadline
+struct RuleOutcome: Codable {
+    var headline: RuleHeadline
     var chips: [String]
     var actions: [String]
 }
@@ -23,10 +23,10 @@ struct EligibilityOutcome: Codable {
 
 enum NumOp: String, Codable { case lt, lte, gt, gte, eq, neq }
 
-indirect enum SimplePredicate: Codable {
-    case and([SimplePredicate])
-    case or([SimplePredicate])
-    case not(SimplePredicate)
+indirect enum RulePredicate: Codable {
+    case and([RulePredicate])
+    case or([RulePredicate])
+    case not(RulePredicate)
     case number(field: String, op: NumOp, value: Double)
     case bool(field: String, equals: Bool)
     case stringContains(field: String, keywords: [String])
@@ -39,9 +39,9 @@ indirect enum SimplePredicate: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let k = try c.decode(Kind.self, forKey: .type)
         switch k {
-        case .and: self = .and(try c.decode([SimplePredicate].self, forKey: .items))
-        case .or:  self = .or(try c.decode([SimplePredicate].self, forKey: .items))
-        case .not: self = .not(try c.decode(SimplePredicate.self, forKey: .items))
+        case .and: self = .and(try c.decode([RulePredicate].self, forKey: .items))
+        case .or:  self = .or(try c.decode([RulePredicate].self, forKey: .items))
+        case .not: self = .not(try c.decode(RulePredicate.self, forKey: .items))
         case .number:
             self = .number(field: try c.decode(String.self, forKey: .field),
                            op: try c.decode(NumOp.self, forKey: .op),
@@ -93,7 +93,7 @@ indirect enum SimplePredicate: Codable {
 
 // MARK: - Applicant field access
 
-extension SimplePredicate {
+extension RulePredicate {
     func evaluate(applicant: Applicant) -> Bool {
         switch self {
         case .and(let items): return items.allSatisfy { $0.evaluate(applicant: applicant) }
