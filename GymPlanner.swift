@@ -8,6 +8,7 @@
 
 import SwiftUI
 import PDFKit
+import UIKit
 
 // MARK: - Taxonomy
 
@@ -111,6 +112,11 @@ struct GymDayPlan {
     let conditioning: [String]          // intervals/shuttles/runs
     let cooldown: [String]
     let notes: [String]
+}
+
+struct AlertItem: Identifiable {
+    let id = UUID()
+    let message: String
 }
 
 // MARK: - Exercise DB (compact but useful)
@@ -318,7 +324,7 @@ final class GymPDFRenderer {
     static func render(plan: GymDayPlan) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("GymDay_\(Int(plan.date.timeIntervalSince1970)).pdf")
         let pdf = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 612, height: 792)) // US Letter
-        try pdf.write(to: url) { ctx in
+        try pdf.writePDF(to: url) { ctx in
             ctx.beginPage()
             let margin: CGFloat = 36
             var y: CGFloat = margin
@@ -397,7 +403,7 @@ struct GymPlannerView: View {
     @State private var plan: GymDayPlan? = nil
     @State private var exportURL: URL? = nil
     @State private var showShare = false
-    @State private var alert: String? = nil
+    @State private var alert: AlertItem? = nil
 
     var body: some View {
         NavigationStack {
@@ -477,7 +483,7 @@ struct GymPlannerView: View {
                                 exportURL = try GymPDFRenderer.render(plan: plan)
                                 showShare = true
                             } catch {
-                                alert = "PDF export failed: \(error.localizedDescription)"
+                                alert = AlertItem(message: "PDF export failed: \(error.localizedDescription)")
                             }
                         } label: { Label("Export PDF", systemImage: "doc.richtext") }
                     }
@@ -489,11 +495,8 @@ struct GymPlannerView: View {
                     Button("Close") { dismiss() }
                 }
             }
-            .alert(item: Binding<String?>(
-                get: { alert },
-                set: { _ in alert = nil }
-            )) { message in
-                Alert(title: Text("Notice"), message: Text(message), dismissButton: .default(Text("OK")))
+            .alert(item: $alert) { item in
+                Alert(title: Text("Notice"), message: Text(item.message), dismissButton: .default(Text("OK")))
             }
             .sheet(isPresented: $showShare) {
                 if let url = exportURL {
@@ -504,12 +507,4 @@ struct GymPlannerView: View {
     }
 }
 
-// UIKit share sheet wrapper (iOS 16+ safe)
-struct ShareSheet: UIViewControllerRepresentable {
-    let activityItems: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-    }
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
 
