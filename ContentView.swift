@@ -17,7 +17,6 @@
 
 import SwiftUI
 import Combine
-import PDFKit
 import UniformTypeIdentifiers
 import PhotosUI
 import UIKit
@@ -394,16 +393,27 @@ final class NotificationService {
         }
     }
 
-    func scheduleSASReminder(hour: Int, minute: Int) {
+    func scheduleSASReminder(for id: UUID, name: String, frequency: SASReminderFrequency, hour: Int, minute: Int) {
+        cancelSASReminder(id: id)
+        guard frequency != .none else { return }
         var comps = DateComponents()
-        comps.weekday = 2
         comps.hour = hour
         comps.minute = minute
+        switch frequency {
+        case .daily:
+            break
+        case .weekly:
+            comps.weekday = Calendar.current.component(.weekday, from: Date())
+        case .monthly:
+            comps.day = Calendar.current.component(.day, from: Date())
+        case .none:
+            return
+        }
         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
         let content = UNMutableNotificationContent()
         content.title = "SAS Follow-up"
-        content.body = "Check in with your SAS applicants."
-        let req = UNNotificationRequest(identifier: "SASWeekly", content: content, trigger: trigger)
+        content.body = "Check in with \(name)."
+        let req = UNNotificationRequest(identifier: "SAS-\(id.uuidString)", content: content, trigger: trigger)
         center.add(req)
     }
 
@@ -420,8 +430,8 @@ final class NotificationService {
         center.add(req)
     }
 
-    func cancelSASReminder() {
-        center.removePendingNotificationRequests(withIdentifiers: ["SASWeekly"])
+    func cancelSASReminder(id: UUID) {
+        center.removePendingNotificationRequests(withIdentifiers: ["SAS-\(id.uuidString)"])
     }
 
     func testSASReminder() {
@@ -622,7 +632,7 @@ struct Applicant: Identifiable, Codable, Equatable {
     var serviceAfterSale: Bool = false
     var lastActivityAt: Date? = nil
     var archived: Bool = false
-    var sasReminder: Bool = false
+    var sasFrequency: SASReminderFrequency = .none
 }
 
 extension Applicant {
@@ -630,6 +640,14 @@ extension Applicant {
         let base = lastActivityAt ?? updatedAt
         return Calendar.current.dateComponents([.day], from: base, to: Date()).day ?? 0
     }
+}
+
+enum SASReminderFrequency: String, Codable, CaseIterable, Identifiable {
+    case none = "Off"
+    case daily = "Daily"
+    case weekly = "Weekly"
+    case monthly = "Monthly"
+    var id: String { rawValue }
 }
 
 struct SettingsModel: Codable, Equatable {
@@ -1003,7 +1021,6 @@ struct ApplicantInboxView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                filterBar
                 Toggle("Hide archived", isOn: $store.hideArchived)
                     .padding(.horizontal)
                 List {
@@ -1079,32 +1096,13 @@ struct ApplicantInboxView: View {
 
     private func delete(at offsets: IndexSet) {
         let ids = offsets.map { filtered[$0].id }
-        for id in ids { FileStore.removeAll(for: id) }
+        for id in ids {
+            FileStore.removeAll(for: id)
+            NotificationService().cancelSASReminder(id: id)
+        }
         store.applicants.removeAll { ids.contains($0.id) }
     }
 
-    private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Stage.allCases.sorted { $0.sortOrder < $1.sortOrder }) { s in
-                    let selected = store.stageFilter == s
-                    Button {
-                        withAnimation { store.stageFilter = (selected ? nil : s) }
-                    } label: {
-                        Text(s.rawValue)
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(selected ? Color.accentColor.opacity(0.2) : Color.subtleBG)
-                            .foregroundColor(selected ? .accentColor : .primary)
-                            .clipShape(Capsule())
-                    }
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 6)
-        }
-    }
 }
 
 struct ApplicantRow: View {
@@ -1165,6 +1163,7 @@ struct ApplicantEditor: View {
     @State private var targetStage: Stage = .newLead
     @State private var ocrSuggestion: String? = nil
     @State private var showEligibilityDetails = false
+    @State private var confirmDelete = false
 
     var body: some View {
         Form {
@@ -1423,6 +1422,10 @@ struct ApplicantEditor: View {
                     Label("Save Applicant", systemImage: "square.and.arrow.down.fill")
                 }.buttonStyle(.borderedProminent)
             }
+            Section {
+                Button("Delete Applicant", role: .destructive) { confirmDelete = true }
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
         }
         .navigationTitle(applicant.fullName)
         .toolbar {
@@ -1454,6 +1457,15 @@ struct ApplicantEditor: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This resets the Days-in-Stage timer.")
+        }
+        .alert("Delete Applicant?", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) {
+                NotificationService().cancelSASReminder(id: applicant.id)
+                FileStore.removeAll(for: applicant.id)
+                store.applicants.removeAll { $0.id == applicant.id }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
         }
         .sheet(isPresented: $showAddChecklist) {
             NavigationStack {
@@ -1850,15 +1862,15 @@ struct SASDetailView: View {
     @EnvironmentObject var store: Store
     @Binding var applicant: Applicant
     private let notif = NotificationService()
-    @State private var shareURL: URL?
-    @State private var showShare = false
-    @State private var stripesURL: URL?
-    @State private var showStripesShare = false
+    @State private var confirmDelete = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Form {
-            Section("Weekly Reminder") {
-                Toggle("Send Reminder", isOn: $applicant.sasReminder)
+            Section("Reminder") {
+                Picker("Notify frequency", selection: $applicant.sasFrequency) {
+                    ForEach(SASReminderFrequency.allCases) { f in Text(f.rawValue).tag(f) }
+                }
                 Button("Test Reminder") { notif.testSASReminder() }
                     .font(.caption)
             }
@@ -1880,44 +1892,16 @@ struct SASDetailView: View {
                 }
             }
             Section {
-                Button("Generate SAS PDF") {
-                    do {
-                        let url = try makeSASPDF(for: applicant, settings: store.settings)
-                        shareURL = url; showShare = true
-                    } catch {
-                        print("PDF error: \(error)")
-                    }
-                }
-            }
-            Section("Stripes for Skills PDF") {
-                Button("Fill & Share Stripes for Skills") {
-                    do {
-                        if let url = Bundle.main.url(forResource: "BLANK STRIPES FOR SKILLS copy", withExtension: "pdf") {
-                            let input = SFSInput(
-                                applicantFullName: applicant.fullName,
-                                recruiterName: store.settings.recruiterName,
-                                recruiterInitials: store.settings.recruiterInitials,
-                                drill1: applicant.drillDate1,
-                                drill2: applicant.drillDate2
-                            )
-                            let out = try StripesForSkillsFiller.fill(templateURL: url, input: input)
-                            stripesURL = out
-                            showStripesShare = true
-                        } else {
-                            print("Template PDF not found in bundle")
-                        }
-                    } catch {
-                        print("Stripes PDF error: \(error)")
-                    }
-                }
+                Button("Delete Applicant", role: .destructive) { confirmDelete = true }
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .navigationTitle(applicant.fullName)
-        .onChange(of: applicant.sasReminder) { value in
-            if value {
-                notif.scheduleSASReminder(hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
+        .onChange(of: applicant.sasFrequency) { value in
+            if value != .none {
+                notif.scheduleSASReminder(for: applicant.id, name: applicant.fullName, frequency: value, hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
             } else {
-                notif.cancelSASReminder()
+                notif.cancelSASReminder(id: applicant.id)
             }
         }
         .onChange(of: applicant.drillDate2) { newValue in
@@ -1927,36 +1911,15 @@ struct SASDetailView: View {
             let fire = (when < Date()) ? Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date() : when
             svc.scheduleSubmitSASPDF(on: fire, applicantName: applicant.fullName)
         }
-        .sheet(isPresented: $showShare) {
-            if let url = shareURL { ShareSheet(activityItems: [url]) }
+        .alert("Delete Applicant?", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) {
+                NotificationService().cancelSASReminder(id: applicant.id)
+                FileStore.removeAll(for: applicant.id)
+                store.applicants.removeAll { $0.id == applicant.id }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
         }
-        .sheet(isPresented: $showStripesShare) {
-            if let url = stripesURL { ShareSheet(activityItems: [url]) }
-        }
-    }
-
-    func makeSASPDF(for applicant: Applicant, settings: SettingsModel) throws -> URL {
-        let page = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let renderer = UIGraphicsPDFRenderer(bounds: page)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("SAS_\(UUID().uuidString).pdf")
-        try renderer.writePDF(to: url) { ctx in
-            ctx.beginPage()
-            let attrs: [NSAttributedString.Key:Any] = [.font: UIFont.systemFont(ofSize: 16)]
-            let small: [NSAttributedString.Key:Any] = [.font: UIFont.systemFont(ofSize: 12)]
-
-            let df = DateFormatter(); df.dateStyle = .short
-            let d1 = applicant.drillDate1.flatMap { df.string(from: $0) } ?? ""
-            let d2 = applicant.drillDate2.flatMap { df.string(from: $0) } ?? ""
-            let enlisted = applicant.enlistedDate.flatMap { df.string(from: $0) } ?? ""
-
-            ("SAS Report — \(applicant.fullName)").draw(at: CGPoint(x: 20, y: 20), withAttributes: attrs)
-            ("Enlisted: \(enlisted)").draw(at: CGPoint(x: 20, y: 50), withAttributes: small)
-            ("Recruiter: \(settings.recruiterName) (\(settings.recruiterInitials))  RSID: \(settings.rsid)").draw(at: CGPoint(x: 20, y: 68), withAttributes: small)
-            ("Drill 1: \(d1)   Drill 2: \(d2)").draw(at: CGPoint(x: 20, y: 86), withAttributes: small)
-
-            ("Reminder: Submit after 2 drills").draw(at: CGPoint(x: 20, y: 140), withAttributes: small)
-        }
-        return url
     }
 }
 
@@ -2005,6 +1968,26 @@ struct ReportsView: View {
                             showImportAlert = true
                         }
                     } label: { Label("Export Applicants JSON", systemImage: "square.and.arrow.up.on.square") }
+
+                    Button {
+                        do {
+                            let url = try makeCSV()
+                            shareURL = url; showShare = true
+                        } catch {
+                            importMessage = "CSV export failed: \(error.localizedDescription)"
+                            showImportAlert = true
+                        }
+                    } label: { Label("Export Applicants CSV", systemImage: "tablecells") }
+
+                    Button {
+                        do {
+                            let url = try makeCustomReport()
+                            shareURL = url; showShare = true
+                        } catch {
+                            importMessage = "Custom report failed: \(error.localizedDescription)"
+                            showImportAlert = true
+                        }
+                    } label: { Label("Export Custom Report", systemImage: "doc.badge.gearshape") }
 
                     Button { showImporter = true } label: {
                         Label("Import Applicants JSON (merge)", systemImage: "square.and.arrow.down.on.square")
@@ -2120,6 +2103,27 @@ struct ReportsView: View {
         }
 
         try data.write(to: url, options: [.atomic])
+        return url
+    }
+
+    func makeCSV() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Applicants.csv")
+        var rows = ["Name,Stage"]
+        for a in store.applicants {
+            rows.append("\(a.fullName),\(a.stage.rawValue)")
+        }
+        try rows.joined(separator: "\n").data(using: .utf8)?.write(to: url)
+        return url
+    }
+
+    func makeCustomReport() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("CustomReport.txt")
+        var lines: [String] = []
+        let grouped = Dictionary(grouping: store.applicants, by: { $0.stage })
+        for (stage, items) in grouped {
+            lines.append("\(stage.rawValue): \(items.count)")
+        }
+        try lines.joined(separator: "\n").data(using: .utf8)?.write(to: url)
         return url
     }
 
@@ -2495,7 +2499,9 @@ struct SettingsView: View {
             let comps = Calendar.current.dateComponents([.hour, .minute], from: newValue)
             store.settings.sasReminderHour = comps.hour ?? 9
             store.settings.sasReminderMinute = comps.minute ?? 0
-            notifService.scheduleSASReminder(hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
+            for a in store.applicants where a.sasFrequency != .none {
+                notifService.scheduleSASReminder(for: a.id, name: a.fullName, frequency: a.sasFrequency, hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
+            }
         }
         .sheet(isPresented: $showGame) { GatorGameView() }
     }
