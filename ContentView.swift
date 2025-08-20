@@ -211,7 +211,36 @@ enum BackgroundStyle: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum BackgroundColor: String, CaseIterable, Codable, Identifiable {
+    case blue
+    case green
+    case purple
+    case orange
+    case pink
+
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .blue: return "Blue"
+        case .green: return "Green"
+        case .purple: return "Purple"
+        case .orange: return "Orange"
+        case .pink: return "Pink"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .blue: return Color(hex: "#3B82F6") ?? .blue
+        case .green: return Color(hex: "#10B981") ?? .green
+        case .purple: return Color(hex: "#9333EA") ?? .purple
+        case .orange: return Color(hex: "#F97316") ?? .orange
+        case .pink: return Color(hex: "#EC4899") ?? .pink
+        }
+    }
+}
+
 struct ParticleBackground: View {
+    var color: Color
     var body: some View {
         TimelineView(.animation) { timeline in
             Canvas { ctx, size in
@@ -220,7 +249,7 @@ struct ParticleBackground: View {
                     let x = Double(i) / 30.0 * size.width
                     let y = (sin(t + Double(i)) * 0.5 + 0.5) * size.height
                     let rect = CGRect(x: x, y: y, width: 4, height: 4)
-                    ctx.fill(Path(ellipseIn: rect), with: .color(.white.opacity(0.4)))
+                    ctx.fill(Path(ellipseIn: rect), with: .color(color.opacity(0.4)))
                 }
             }
         }
@@ -697,6 +726,7 @@ struct SettingsModel: Codable, Equatable {
     var rsid: String = ""
     var themeID: String = ROPSTheme.default.id
     var backgroundStyle: BackgroundStyle = .solid
+    var backgroundColor: BackgroundColor = .blue
     var aging: AgingConfig = AgingConfig()
     var logoStored: Bool = false
     var calendarID: String? = nil
@@ -705,7 +735,7 @@ struct SettingsModel: Codable, Equatable {
     var customReport: CustomReportOptions = .init()
 
     enum CodingKeys: String, CodingKey {
-        case recruiterName, recruiterInitials, rsid, themeID, backgroundStyle, aging, logoStored, calendarID, agingWarnDays, agingAlertDays, sasReminderHour, sasReminderMinute, customReport
+        case recruiterName, recruiterInitials, rsid, themeID, backgroundStyle, backgroundColor, aging, logoStored, calendarID, agingWarnDays, agingAlertDays, sasReminderHour, sasReminderMinute, customReport
     }
 
     init() { }
@@ -717,6 +747,7 @@ struct SettingsModel: Codable, Equatable {
         rsid = try container.decodeIfPresent(String.self, forKey: .rsid) ?? ""
         themeID = try container.decodeIfPresent(String.self, forKey: .themeID) ?? ROPSTheme.default.id
         backgroundStyle = try container.decodeIfPresent(BackgroundStyle.self, forKey: .backgroundStyle) ?? .solid
+        backgroundColor = try container.decodeIfPresent(BackgroundColor.self, forKey: .backgroundColor) ?? .blue
         if let cfg = try container.decodeIfPresent(AgingConfig.self, forKey: .aging) {
             aging = cfg
         } else {
@@ -738,6 +769,7 @@ struct SettingsModel: Codable, Equatable {
         try container.encode(rsid, forKey: .rsid)
         try container.encode(themeID, forKey: .themeID)
         try container.encode(backgroundStyle, forKey: .backgroundStyle)
+        try container.encode(backgroundColor, forKey: .backgroundColor)
         try container.encode(aging, forKey: .aging)
         try container.encode(logoStored, forKey: .logoStored)
         try container.encode(calendarID, forKey: .calendarID)
@@ -1002,13 +1034,14 @@ struct ContentView: View {
     }
 
     @ViewBuilder var backgroundView: some View {
+        let base = store.settings.backgroundColor.color
         switch store.settings.backgroundStyle {
         case .solid:
-            Color.subtleBG.ignoresSafeArea()
+            base.ignoresSafeArea()
         case .gradient:
-            LinearGradient(colors: [theme.tint.opacity(0.3), Color.subtleBG], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
+            LinearGradient(colors: [base, Color.subtleBG], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
         case .particles:
-            ParticleBackground().ignoresSafeArea()
+            ParticleBackground(color: base).ignoresSafeArea()
         case .perScreen:
             Color.clear.ignoresSafeArea()
         }
@@ -2555,6 +2588,11 @@ struct SettingsView: View {
                     Picker("Background", selection: $store.settings.backgroundStyle) {
                         ForEach(BackgroundStyle.allCases) { s in
                             Text(s.name).tag(s)
+                        }
+                    }
+                    Picker("Background Color", selection: $store.settings.backgroundColor) {
+                        ForEach(BackgroundColor.allCases) { c in
+                            HStack { Circle().fill(c.color).frame(width: 14, height: 14); Text(c.name) }.tag(c)
                         }
                     }
                 }
