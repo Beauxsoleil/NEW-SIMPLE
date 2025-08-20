@@ -194,6 +194,68 @@ struct ROPSTheme: Identifiable, Codable, Hashable {
     static let `default` = all.first!
 }
 
+enum BackgroundStyle: String, CaseIterable, Codable, Identifiable {
+    case solid
+    case gradient
+    case particles
+    case perScreen
+
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .solid: return "Solid"
+        case .gradient: return "Gradient"
+        case .particles: return "Dynamic Particles"
+        case .perScreen: return "Per Screen"
+        }
+    }
+}
+
+enum BackgroundColor: String, CaseIterable, Codable, Identifiable {
+    case blue
+    case green
+    case purple
+    case orange
+    case pink
+
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .blue: return "Blue"
+        case .green: return "Green"
+        case .purple: return "Purple"
+        case .orange: return "Orange"
+        case .pink: return "Pink"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .blue: return Color(hex: "#3B82F6") ?? .blue
+        case .green: return Color(hex: "#10B981") ?? .green
+        case .purple: return Color(hex: "#9333EA") ?? .purple
+        case .orange: return Color(hex: "#F97316") ?? .orange
+        case .pink: return Color(hex: "#EC4899") ?? .pink
+        }
+    }
+}
+
+struct ParticleBackground: View {
+    var color: Color
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { ctx, size in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                for i in 0..<30 {
+                    let x = Double(i) / 30.0 * size.width
+                    let y = (sin(t + Double(i)) * 0.5 + 0.5) * size.height
+                    let rect = CGRect(x: x, y: y, width: 4, height: 4)
+                    ctx.fill(Path(ellipseIn: rect), with: .color(color.opacity(0.4)))
+                }
+            }
+        }
+    }
+}
+
 extension Color {
     init?(hex: String) {
         var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -604,6 +666,9 @@ struct Applicant: Identifiable, Codable, Equatable {
     var physicalHealth: String
     var legalIssues: String
     var educationLevel: String
+    var medicalFlags: [MedicalFlag] = []
+    var legalHistory: [LegalDisqualifier] = []
+    var interestLevel: Int = 0
     var maritalStatus: String
     var dependents: Int
     var hasTattoos: Bool
@@ -650,19 +715,27 @@ enum SASReminderFrequency: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct CustomReportOptions: Codable, Equatable {
+    var includeStages: Bool = true
+    var includeNames: Bool = true
+}
+
 struct SettingsModel: Codable, Equatable {
     var recruiterName: String = ""
     var recruiterInitials: String = ""
     var rsid: String = ""
     var themeID: String = ROPSTheme.default.id
+    var backgroundStyle: BackgroundStyle = .solid
+    var backgroundColor: BackgroundColor = .blue
     var aging: AgingConfig = AgingConfig()
     var logoStored: Bool = false
     var calendarID: String? = nil
     var sasReminderHour: Int = 9
     var sasReminderMinute: Int = 0
+    var customReport: CustomReportOptions = .init()
 
     enum CodingKeys: String, CodingKey {
-        case recruiterName, recruiterInitials, rsid, themeID, aging, logoStored, calendarID, agingWarnDays, agingAlertDays, sasReminderHour, sasReminderMinute
+        case recruiterName, recruiterInitials, rsid, themeID, backgroundStyle, backgroundColor, aging, logoStored, calendarID, agingWarnDays, agingAlertDays, sasReminderHour, sasReminderMinute, customReport
     }
 
     init() { }
@@ -673,6 +746,8 @@ struct SettingsModel: Codable, Equatable {
         recruiterInitials = try container.decodeIfPresent(String.self, forKey: .recruiterInitials) ?? ""
         rsid = try container.decodeIfPresent(String.self, forKey: .rsid) ?? ""
         themeID = try container.decodeIfPresent(String.self, forKey: .themeID) ?? ROPSTheme.default.id
+        backgroundStyle = try container.decodeIfPresent(BackgroundStyle.self, forKey: .backgroundStyle) ?? .solid
+        backgroundColor = try container.decodeIfPresent(BackgroundColor.self, forKey: .backgroundColor) ?? .blue
         if let cfg = try container.decodeIfPresent(AgingConfig.self, forKey: .aging) {
             aging = cfg
         } else {
@@ -684,6 +759,7 @@ struct SettingsModel: Codable, Equatable {
         calendarID = try container.decodeIfPresent(String.self, forKey: .calendarID)
         sasReminderHour = try container.decodeIfPresent(Int.self, forKey: .sasReminderHour) ?? 9
         sasReminderMinute = try container.decodeIfPresent(Int.self, forKey: .sasReminderMinute) ?? 0
+        customReport = try container.decodeIfPresent(CustomReportOptions.self, forKey: .customReport) ?? .init()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -692,11 +768,14 @@ struct SettingsModel: Codable, Equatable {
         try container.encode(recruiterInitials, forKey: .recruiterInitials)
         try container.encode(rsid, forKey: .rsid)
         try container.encode(themeID, forKey: .themeID)
+        try container.encode(backgroundStyle, forKey: .backgroundStyle)
+        try container.encode(backgroundColor, forKey: .backgroundColor)
         try container.encode(aging, forKey: .aging)
         try container.encode(logoStored, forKey: .logoStored)
         try container.encode(calendarID, forKey: .calendarID)
         try container.encode(sasReminderHour, forKey: .sasReminderHour)
         try container.encode(sasReminderMinute, forKey: .sasReminderMinute)
+        try container.encode(customReport, forKey: .customReport)
     }
 }
 
@@ -706,14 +785,17 @@ fileprivate enum ChecklistLexicon {
     static let aliasMap: [String:[String]] = [
         "Social Security Card": ["ssn","ss","ss card","social","social security","social security card"],
         "Birth Certificate": ["bc","birth cert","birth certificate"],
-        "Driver's License": ["dl","driver license","drivers license","driver's license","license"]
+        "Driver's License": ["dl","driver license","drivers license","driver's license","license","driverlicense","driverslicense"]
     ]
     static var canonical: [String] { Array(aliasMap.keys) }
 
     static func canonicalize(_ raw: String) -> String {
-        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleaned = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[-_]", with: " ", options: .regularExpression)
+            .lowercased()
         for (canon, aliases) in aliasMap {
-            if aliases.contains(s) || canon.lowercased() == s { return canon }
+            if aliases.contains(cleaned) || canon.lowercased() == cleaned { return canon }
         }
         return raw
     }
@@ -725,6 +807,16 @@ fileprivate enum ChecklistLexicon {
             if aliases.first(where: { s.contains($0) }) != nil { return canon }
         }
         return nil
+    }
+
+    static func markCollected(title: String, for applicant: inout Applicant) {
+        let canon = canonicalize(title)
+        guard canonical.contains(canon) else { return }
+        if let idx = applicant.checklist.firstIndex(where: { $0.canonicalName == canon }) {
+            applicant.checklist[idx].isCollected = true
+        } else {
+            applicant.checklist.append(.init(canonicalName: canon, isCollected: true))
+        }
     }
 
     static func defaults() -> [ChecklistItem] {
@@ -928,6 +1020,7 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
+        .background(backgroundView)
         .tint(theme.tint)
         .environmentObject(store)
         .onAppear {
@@ -938,6 +1031,20 @@ struct ContentView: View {
 
     var theme: ROPSTheme {
         ROPSTheme.all.first(where: { $0.id == store.settings.themeID }) ?? .default
+    }
+
+    @ViewBuilder var backgroundView: some View {
+        let base = store.settings.backgroundColor.color
+        switch store.settings.backgroundStyle {
+        case .solid:
+            base.ignoresSafeArea()
+        case .gradient:
+            LinearGradient(colors: [base, Color.subtleBG], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
+        case .particles:
+            ParticleBackground(color: base).ignoresSafeArea()
+        case .perScreen:
+            Color.clear.ignoresSafeArea()
+        }
     }
 
     func scheduleAgingNotification() {
@@ -1391,11 +1498,13 @@ struct ApplicantEditor: View {
                                 do {
                                     let saved = try FileStore.importFile(for: applicant.id, from: tmp)
                                     if let rel = FileStore.relativePath(for: saved) {
+                                        let title = saved.deletingPathExtension().lastPathComponent
                                         applicant.files.append(.init(
-                                            title: saved.deletingPathExtension().lastPathComponent,
+                                            title: title,
                                             note: "Imported from Photos",
                                             filePath: rel
                                         ))
+                                        ChecklistLexicon.markCollected(title: title, for: &applicant)
                                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                     }
                                 } catch { print("Photo import error: \(error)") }
@@ -1418,11 +1527,13 @@ struct ApplicantEditor: View {
                         do {
                             let saved = try FileStore.importFile(for: applicant.id, from: url)
                             if let rel = FileStore.relativePath(for: saved) {
+                                let title = saved.deletingPathExtension().lastPathComponent
                                 applicant.files.append(.init(
-                                    title: saved.deletingPathExtension().lastPathComponent,
+                                    title: title,
                                     note: "",
                                     filePath: rel
                                 ))
+                                ChecklistLexicon.markCollected(title: title, for: &applicant)
                                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             }
                         } catch { print("Import error: \(error)") }
@@ -1579,10 +1690,8 @@ struct ApplicantEditor: View {
                         let saved = try FileStore.importFile(for: applicant.id, from: tmp)
                         if let rel = FileStore.relativePath(for: saved) {
                             applicant.files.append(.init(title: suggestion, note: "", filePath: rel))
+                            ChecklistLexicon.markCollected(title: suggestion, for: &applicant)
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                        if let key = ChecklistLexicon.inferDocKey(text), !applicant.checklist.contains(where: { $0.canonicalName == key }) {
-                            applicant.checklist.append(.init(canonicalName: key, isCollected: true))
                         }
                     } catch { print("Scan import error: \(error)") }
                 }
@@ -2024,6 +2133,10 @@ struct ReportsView: View {
                         }
                     } label: { Label("Export Custom Report", systemImage: "doc.badge.gearshape") }
 
+                    NavigationLink("Custom Report Settings") {
+                        CustomReportSettingsView(options: $store.settings.customReport)
+                    }
+
                     Button { showImporter = true } label: {
                         Label("Import Data JSON (merge)", systemImage: "square.and.arrow.down.on.square")
                     }
@@ -2154,9 +2267,21 @@ struct ReportsView: View {
     func makeCustomReport() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("CustomReport.txt")
         var lines: [String] = []
-        let grouped = Dictionary(grouping: store.applicants, by: { $0.stage })
-        for (stage, items) in grouped {
-            lines.append("\(stage.rawValue): \(items.count)")
+        let opts = store.settings.customReport
+        if opts.includeStages {
+            let grouped = Dictionary(grouping: store.applicants, by: { $0.stage })
+            for (stage, items) in grouped {
+                lines.append("\(stage.rawValue): \(items.count)")
+                if opts.includeNames {
+                    for a in items.sorted(by: { $0.fullName < $1.fullName }) {
+                        lines.append(" - \(a.fullName)")
+                    }
+                }
+            }
+        } else if opts.includeNames {
+            for a in store.applicants.sorted(by: { $0.fullName < $1.fullName }) {
+                lines.append(a.fullName)
+            }
         }
         try lines.joined(separator: "\n").data(using: .utf8)?.write(to: url)
         return url
@@ -2174,6 +2299,18 @@ struct ReportsView: View {
         let bound = (text as NSString).boundingRect(with: rect.size, options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs, context: nil)
         (text as NSString).draw(in: CGRect(x: x, y: y, width: width, height: ceil(bound.height)), withAttributes: attrs)
         return ceil(bound.height)
+    }
+}
+
+struct CustomReportSettingsView: View {
+    @Binding var options: CustomReportOptions
+
+    var body: some View {
+        Form {
+            Toggle("Include Stage Breakdown", isOn: $options.includeStages)
+            Toggle("Include Applicant Names", isOn: $options.includeNames)
+        }
+        .navigationTitle("Custom Report Settings")
     }
 }
 
@@ -2446,6 +2583,16 @@ struct SettingsView: View {
                     Picker("Accent", selection: $store.settings.themeID) {
                         ForEach(ROPSTheme.all) { t in
                             HStack { Circle().fill(t.tint).frame(width: 14, height: 14); Text(t.name) }.tag(t.id)
+                        }
+                    }
+                    Picker("Background", selection: $store.settings.backgroundStyle) {
+                        ForEach(BackgroundStyle.allCases) { s in
+                            Text(s.name).tag(s)
+                        }
+                    }
+                    Picker("Background Color", selection: $store.settings.backgroundColor) {
+                        ForEach(BackgroundColor.allCases) { c in
+                            HStack { Circle().fill(c.color).frame(width: 14, height: 14); Text(c.name) }.tag(c)
                         }
                     }
                 }

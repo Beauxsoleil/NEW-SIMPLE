@@ -9,7 +9,24 @@ enum RulesService {
             chip: "Age",
             action: "Age waiver"
         )
-        return RulesEngine(rules: [ageRule])
+
+        let medicalRule = Rule(
+            name: "Medical History",
+            predicate: .hasValidMedicalHistory(required: [.asthma, .colorBlind]),
+            failHeadline: .needsWaiver,
+            chip: "Medical",
+            action: "Submit medical waiver"
+        )
+
+        let legalRule = Rule(
+            name: "Legal Record",
+            predicate: .hasCleanLegalRecord(disqualifiers: [.felony, .dui]),
+            failHeadline: .notEligible,
+            chip: "Legal",
+            action: "Review with legal"
+        )
+
+        return RulesEngine(rules: [ageRule, medicalRule, legalRule])
     }
 
     static func evaluate(_ applicant: Applicant) -> EligibilityOutcome {
