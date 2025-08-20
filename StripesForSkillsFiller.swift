@@ -107,8 +107,10 @@ public enum StripesForSkillsFiller {
     /// Search the document and return the first occurrence for a visible label.
     private static func findFirstOccurrence(of label: String,
                                             in doc: PDFDocument) -> (PDFPage, CGRect)? {
-        guard let selections = doc.findString(label, withOptions: .caseInsensitive),
-              selections.count > 0 else { return nil }
+        // `findString` now returns a non-optional array on modern SDKs, so we
+        // capture the result directly and verify it's not empty.
+        let selections = doc.findString(label, withOptions: .caseInsensitive)
+        guard !selections.isEmpty else { return nil }
 
         let best = selections.min { selA, selB in
             let la = selA.string?.count ?? Int.max
