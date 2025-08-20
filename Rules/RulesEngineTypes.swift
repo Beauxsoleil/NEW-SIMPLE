@@ -4,16 +4,6 @@
 
 import Foundation
 
-// MARK: - Applicant flag types
-
-enum MedicalFlag: String, Codable {
-    case asthma, colorBlind, depression, surgeryHistory
-}
-
-enum LegalDisqualifier: String, Codable {
-    case felony, dui, domesticViolence, drugUse
-}
-
 // MARK: - Eligibility presentation types
 
 enum EligibilityHeadline: String, Codable {
@@ -33,7 +23,7 @@ struct EligibilityOutcome: Codable {
 
 enum NumOp: String, Codable { case lt, lte, gt, gte, eq, neq }
 
-enum SimplePredicate: Codable {
+indirect enum SimplePredicate: Codable {
     case and([SimplePredicate])
     case or([SimplePredicate])
     case not(SimplePredicate)
@@ -131,7 +121,7 @@ extension SimplePredicate {
             switch any {
             case .none: present = false
             case .some(let val as String):
-                present = !val.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                present = !val.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
             default:
                 present = true
             }
@@ -158,16 +148,16 @@ extension SimplePredicate {
     }
 
     private static func numberValue(field: String, applicant: Applicant) -> Double? {
-        if let v = anyValue(field: field, applicant: applicant) as? Int { return Double(v) }
-        if let v = anyValue(field: field, applicant: applicant) as? Double { return v }
+        if let v = Self.anyValue(field: field, applicant: applicant) as? Int { return Double(v) }
+        if let v = Self.anyValue(field: field, applicant: applicant) as? Double { return v }
         return nil
     }
 
     private static func boolValue(field: String, applicant: Applicant) -> Bool? {
-        anyValue(field: field, applicant: applicant) as? Bool
+        Self.anyValue(field: field, applicant: applicant) as? Bool
     }
 
     private static func stringValue(field: String, applicant: Applicant) -> String? {
-        anyValue(field: field, applicant: applicant) as? String
+        Self.anyValue(field: field, applicant: applicant) as? String
     }
 }
