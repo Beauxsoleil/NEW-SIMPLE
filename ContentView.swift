@@ -10,14 +10,13 @@
 //  - Checklist with synonyms (SSN/BC/DL/…)
 //  - Per-applicant “Files” metadata (scan/OCR later)
 //  - PDF export grouped by stage, optional logo from Settings
-//  - JSON import/export (merge by UUID)
+//  - JSON import/export (Applicants/Events/Settings merge by UUID)
 //  - Settings with logo picker, theme, thresholds, recruiter info
-//  - Tiny “gator eats 0s” Easter-egg mini-game
+//  - Pac-Man style “Trout Run” mini-game (trout vs. Sasquatches)
 //
 
 import SwiftUI
 import Combine
-import PDFKit
 import UniformTypeIdentifiers
 import PhotosUI
 import UIKit
@@ -150,6 +149,13 @@ fileprivate enum FileStore {
         guard path.hasPrefix(root.path) else { return nil }
         return String(path.dropFirst(root.path.count + (root.path.hasSuffix("/") ? 0 : 1)))
     }
+
+    static func removeAll(for applicantID: UUID) {
+        do {
+            let dir = try applicantFilesDir(applicantID: applicantID)
+            try FileManager.default.removeItem(at: dir)
+        } catch { print("Remove applicant files error: \(error)") }
+    }
 }
 
 fileprivate extension Date {
@@ -246,6 +252,13 @@ struct FileNote: Identifiable, Codable, Equatable {
     var note: String
     var filePath: String? = nil
     var addedAt: Date = Date()
+}
+
+struct ACFTEntry: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var event: String
+    var raw: Int?
+    var points: Int?
 }
 
 struct RecruitEvent: Identifiable, Codable, Equatable {
@@ -380,16 +393,27 @@ final class NotificationService {
         }
     }
 
-    func scheduleSASReminder(hour: Int, minute: Int) {
+    func scheduleSASReminder(for id: UUID, name: String, frequency: SASReminderFrequency, hour: Int, minute: Int) {
+        cancelSASReminder(id: id)
+        guard frequency != .none else { return }
         var comps = DateComponents()
-        comps.weekday = 2
         comps.hour = hour
         comps.minute = minute
+        switch frequency {
+        case .daily:
+            break
+        case .weekly:
+            comps.weekday = Calendar.current.component(.weekday, from: Date())
+        case .monthly:
+            comps.day = Calendar.current.component(.day, from: Date())
+        case .none:
+            return
+        }
         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
         let content = UNMutableNotificationContent()
         content.title = "SAS Follow-up"
-        content.body = "Check in with your SAS applicants."
-        let req = UNNotificationRequest(identifier: "SASWeekly", content: content, trigger: trigger)
+        content.body = "Check in with \(name)."
+        let req = UNNotificationRequest(identifier: "SAS-\(id.uuidString)", content: content, trigger: trigger)
         center.add(req)
     }
 
@@ -406,8 +430,8 @@ final class NotificationService {
         center.add(req)
     }
 
-    func cancelSASReminder() {
-        center.removePendingNotificationRequests(withIdentifiers: ["SASWeekly"])
+    func cancelSASReminder(id: UUID) {
+        center.removePendingNotificationRequests(withIdentifiers: ["SAS-\(id.uuidString)"])
     }
 
     func testSASReminder() {
@@ -600,6 +624,7 @@ struct Applicant: Identifiable, Codable, Equatable {
     var checklist: [ChecklistItem]
     var notes: String
     var files: [FileNote]
+    var acft: [ACFTEntry] = []
 
     // v2 additions
     var issues: [String] = []
@@ -607,7 +632,7 @@ struct Applicant: Identifiable, Codable, Equatable {
     var serviceAfterSale: Bool = false
     var lastActivityAt: Date? = nil
     var archived: Bool = false
-    var sasReminder: Bool = false
+    var sasFrequency: SASReminderFrequency = .none
 }
 
 extension Applicant {
@@ -615,6 +640,14 @@ extension Applicant {
         let base = lastActivityAt ?? updatedAt
         return Calendar.current.dateComponents([.day], from: base, to: Date()).day ?? 0
     }
+}
+
+enum SASReminderFrequency: String, Codable, CaseIterable, Identifiable {
+    case none = "Off"
+    case daily = "Daily"
+    case weekly = "Weekly"
+    case monthly = "Monthly"
+    var id: String { rawValue }
 }
 
 struct SettingsModel: Codable, Equatable {
@@ -793,26 +826,61 @@ final class Store: ObservableObject {
         } catch { print("Settings load error: \(error)") }
     }
 
+    // Whole-app snapshot for JSON round-trips
+    struct ExportEnvelope: Codable {
+        var applicants: [Applicant]
+        var events: [RecruitEvent]
+        var settings: SettingsModel
+    }
+
     // JSON Export/Import
     func exportJSON() throws -> URL {
-        let data = try JSONEncoder().encode(applicants)
+        // Keep events/settings so re-import doesn't lose information
+        let dump = ExportEnvelope(applicants: applicants, events: events, settings: settings)
+        let data = try JSONEncoder().encode(dump)
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ROPS_Applicants_\(Date().yyyymmdd).json")
+            .appendingPathComponent("ROPS_Full_\(Date().yyyymmdd).json")
         try data.write(to: url, options: [.atomic])
         return url
     }
 
-    func importJSON(from url: URL) throws -> (added: Int, updated: Int) {
+    func importJSON(from url: URL) throws -> (appsAdded: Int, appsUpdated: Int, eventsAdded: Int, eventsUpdated: Int) {
         let data = try Data(contentsOf: url)
-        let incoming = try JSONDecoder().decode([Applicant].self, from: data)
-        var dict = Dictionary(uniqueKeysWithValues: applicants.map { ($0.id, $0) })
-        var added = 0, updated = 0
-        for a in incoming {
-            if dict[a.id] == nil { added += 1 } else { updated += 1 }
-            dict[a.id] = a
+        if let dump = try? JSONDecoder().decode(ExportEnvelope.self, from: data) {
+            // Applicants merge by UUID
+            var aDict = Dictionary(uniqueKeysWithValues: applicants.map { ($0.id, $0) })
+            var aAdded = 0, aUpdated = 0
+            for a in dump.applicants {
+                if aDict[a.id] == nil { aAdded += 1 } else { aUpdated += 1 }
+                aDict[a.id] = a
+            }
+            applicants = Array(aDict.values)
+
+            // Events merge by UUID
+            var eDict = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0) })
+            var eAdded = 0, eUpdated = 0
+            for e in dump.events {
+                if eDict[e.id] == nil { eAdded += 1 } else { eUpdated += 1 }
+                eDict[e.id] = e
+            }
+            events = Array(eDict.values)
+
+            // Settings overwrite; user initiated import
+            settings = dump.settings
+
+            return (aAdded, aUpdated, eAdded, eUpdated)
+        } else {
+            // Backward compatibility: older exports were applicants array only
+            let incoming = try JSONDecoder().decode([Applicant].self, from: data)
+            var dict = Dictionary(uniqueKeysWithValues: applicants.map { ($0.id, $0) })
+            var added = 0, updated = 0
+            for a in incoming {
+                if dict[a.id] == nil { added += 1 } else { updated += 1 }
+                dict[a.id] = a
+            }
+            applicants = Array(dict.values)
+            return (added, updated, 0, 0)
         }
-        applicants = Array(dict.values)
-        return (added, updated)
     }
 
     // Logo
@@ -890,6 +958,7 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     gauges
                     thisWeek
+                    quickLinks
                 }
                 .padding()
             }
@@ -943,6 +1012,21 @@ struct DashboardView: View {
         let end = cal.date(byAdding: .day, value: 7, to: start)!
         return start..<end
     }
+
+    var quickLinks: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Shortcuts").font(.headline)
+            HStack {
+                NavigationLink(destination: WorkStationView()) {
+                    Label("Snippets", systemImage: "text.badge.plus")
+                }
+                NavigationLink(destination: EventsView()) {
+                    Label("Events", systemImage: "calendar")
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+    }
 }
 
 // MARK: - Applicant Inbox
@@ -972,7 +1056,6 @@ struct ApplicantInboxView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                filterBar
                 Toggle("Hide archived", isOn: $store.hideArchived)
                     .padding(.horizontal)
                 List {
@@ -1048,31 +1131,13 @@ struct ApplicantInboxView: View {
 
     private func delete(at offsets: IndexSet) {
         let ids = offsets.map { filtered[$0].id }
+        for id in ids {
+            FileStore.removeAll(for: id)
+            NotificationService().cancelSASReminder(id: id)
+        }
         store.applicants.removeAll { ids.contains($0.id) }
     }
 
-    private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Stage.allCases.sorted { $0.sortOrder < $1.sortOrder }) { s in
-                    let selected = store.stageFilter == s
-                    Button {
-                        withAnimation { store.stageFilter = (selected ? nil : s) }
-                    } label: {
-                        Text(s.rawValue)
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(selected ? Color.accentColor.opacity(0.2) : Color.subtleBG)
-                            .foregroundColor(selected ? .accentColor : .primary)
-                            .clipShape(Capsule())
-                    }
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 6)
-        }
-    }
 }
 
 struct ApplicantRow: View {
@@ -1127,11 +1192,13 @@ struct ApplicantEditor: View {
     @State private var showScanner = false
     @State private var showDocPicker = false
     @State private var showQuickLookURL: URL?
+    @State private var editFile: FileNote?
     @State private var pickPhotos: [PhotosPickerItem] = []
     @State private var confirmStage = false
     @State private var targetStage: Stage = .newLead
     @State private var ocrSuggestion: String? = nil
     @State private var showEligibilityDetails = false
+    @State private var confirmDelete = false
 
     var body: some View {
         Form {
@@ -1287,6 +1354,12 @@ struct ApplicantEditor: View {
                             }
                         }
                         .accessibilityLabel("Open \(f.title) in Quick Look")
+                        .contextMenu {
+                            Button("Rename") { editFile = f }
+                            if let path = f.filePath, let url = FileStore.absoluteURL(from: path) {
+                                ShareLink("Export", item: url)
+                            }
+                        }
                         .swipeActions {
                             Button(role: .destructive) {
                                 if let p = f.filePath { FileStore.removeFile(at: p) }
@@ -1359,6 +1432,22 @@ struct ApplicantEditor: View {
             .sheet(item: $showQuickLookURL) { url in
                 QuickLookPreview(url: url)
             }
+            .sheet(item: $editFile) { file in
+                if let binding = binding(for: file) {
+                    NavigationStack {
+                        Form {
+                            TextField("Title", text: binding.title)
+                            TextField("Note", text: binding.note, axis: .vertical)
+                            if let path = binding.wrappedValue.filePath,
+                               let url = FileStore.absoluteURL(from: path) {
+                                ShareLink("Export File", item: url)
+                            }
+                        }
+                        .navigationTitle("Edit File")
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { editFile = nil } } }
+                    }
+                }
+            }
 
             Section {
                 Button {
@@ -1367,6 +1456,10 @@ struct ApplicantEditor: View {
                 } label: {
                     Label("Save Applicant", systemImage: "square.and.arrow.down.fill")
                 }.buttonStyle(.borderedProminent)
+            }
+            Section {
+                Button("Delete Applicant", role: .destructive) { confirmDelete = true }
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .navigationTitle(applicant.fullName)
@@ -1390,12 +1483,24 @@ struct ApplicantEditor: View {
                 if targetStage == .enlisted {
                     applicant.enlistedDate = Date()
                     applicant.serviceAfterSale = true
+                } else {
+                    applicant.serviceAfterSale = false
+                    applicant.enlistedDate = nil
                 }
                 save()
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This resets the Days-in-Stage timer.")
+        }
+        .alert("Delete Applicant?", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) {
+                NotificationService().cancelSASReminder(id: applicant.id)
+                FileStore.removeAll(for: applicant.id)
+                store.applicants.removeAll { $0.id == applicant.id }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
         }
         .sheet(isPresented: $showAddChecklist) {
             NavigationStack {
@@ -1495,6 +1600,11 @@ struct ApplicantEditor: View {
         case .passNoTape: return false
         default: return true
         }
+    }
+
+    func binding(for file: FileNote) -> Binding<FileNote>? {
+        guard let idx = applicant.files.firstIndex(where: { $0.id == file.id }) else { return nil }
+        return $applicant.files[idx]
     }
 
     func save() {
@@ -1787,15 +1897,15 @@ struct SASDetailView: View {
     @EnvironmentObject var store: Store
     @Binding var applicant: Applicant
     private let notif = NotificationService()
-    @State private var shareURL: URL?
-    @State private var showShare = false
-    @State private var stripesURL: URL?
-    @State private var showStripesShare = false
+    @State private var confirmDelete = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Form {
-            Section("Weekly Reminder") {
-                Toggle("Send Reminder", isOn: $applicant.sasReminder)
+            Section("Reminder") {
+                Picker("Notify frequency", selection: $applicant.sasFrequency) {
+                    ForEach(SASReminderFrequency.allCases) { f in Text(f.rawValue).tag(f) }
+                }
                 Button("Test Reminder") { notif.testSASReminder() }
                     .font(.caption)
             }
@@ -1803,45 +1913,30 @@ struct SASDetailView: View {
                 DatePicker("Drill 1", selection: DateBinding($applicant.drillDate1), displayedComponents: .date)
                 DatePicker("Drill 2", selection: DateBinding($applicant.drillDate2), displayedComponents: .date)
             }
-            Section {
-                Button("Generate SAS PDF") {
-                    do {
-                        let url = try makeSASPDF(for: applicant, settings: store.settings)
-                        shareURL = url; showShare = true
-                    } catch {
-                        print("PDF error: \(error)")
+            Section("ACFT Scores") {
+                ForEach($applicant.acft) { $e in
+                    HStack {
+                        TextField("Event", text: $e.event)
+                        TextField("Raw", text: IntBinding($e.raw)).keyboardType(.numberPad)
+                        TextField("Pts", text: IntBinding($e.points)).keyboardType(.numberPad)
                     }
+                }
+                .onDelete { applicant.acft.remove(atOffsets: $0) }
+                Button { applicant.acft.append(.init(event: "", raw: nil, points: nil)) } label: {
+                    Label("Add Event", systemImage: "plus.circle")
                 }
             }
-            Section("Stripes for Skills PDF") {
-                Button("Fill & Share Stripes for Skills") {
-                    do {
-                        if let url = Bundle.main.url(forResource: "BLANK STRIPES FOR SKILLS copy", withExtension: "pdf") {
-                            let input = SFSInput(
-                                applicantFullName: applicant.fullName,
-                                recruiterName: store.settings.recruiterName,
-                                recruiterInitials: store.settings.recruiterInitials,
-                                drill1: applicant.drillDate1,
-                                drill2: applicant.drillDate2
-                            )
-                            let out = try StripesForSkillsFiller.fill(templateURL: url, input: input)
-                            stripesURL = out
-                            showStripesShare = true
-                        } else {
-                            print("Template PDF not found in bundle")
-                        }
-                    } catch {
-                        print("Stripes PDF error: \(error)")
-                    }
-                }
+            Section {
+                Button("Delete Applicant", role: .destructive) { confirmDelete = true }
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .navigationTitle(applicant.fullName)
-        .onChange(of: applicant.sasReminder) { value in
-            if value {
-                notif.scheduleSASReminder(hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
+        .onChange(of: applicant.sasFrequency) { value in
+            if value != .none {
+                notif.scheduleSASReminder(for: applicant.id, name: applicant.fullName, frequency: value, hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
             } else {
-                notif.cancelSASReminder()
+                notif.cancelSASReminder(id: applicant.id)
             }
         }
         .onChange(of: applicant.drillDate2) { newValue in
@@ -1851,36 +1946,15 @@ struct SASDetailView: View {
             let fire = (when < Date()) ? Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date() : when
             svc.scheduleSubmitSASPDF(on: fire, applicantName: applicant.fullName)
         }
-        .sheet(isPresented: $showShare) {
-            if let url = shareURL { ShareSheet(activityItems: [url]) }
+        .alert("Delete Applicant?", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) {
+                NotificationService().cancelSASReminder(id: applicant.id)
+                FileStore.removeAll(for: applicant.id)
+                store.applicants.removeAll { $0.id == applicant.id }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
         }
-        .sheet(isPresented: $showStripesShare) {
-            if let url = stripesURL { ShareSheet(activityItems: [url]) }
-        }
-    }
-
-    func makeSASPDF(for applicant: Applicant, settings: SettingsModel) throws -> URL {
-        let page = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let renderer = UIGraphicsPDFRenderer(bounds: page)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("SAS_\(UUID().uuidString).pdf")
-        try renderer.writePDF(to: url) { ctx in
-            ctx.beginPage()
-            let attrs: [NSAttributedString.Key:Any] = [.font: UIFont.systemFont(ofSize: 16)]
-            let small: [NSAttributedString.Key:Any] = [.font: UIFont.systemFont(ofSize: 12)]
-
-            let df = DateFormatter(); df.dateStyle = .short
-            let d1 = applicant.drillDate1.flatMap { df.string(from: $0) } ?? ""
-            let d2 = applicant.drillDate2.flatMap { df.string(from: $0) } ?? ""
-            let enlisted = applicant.enlistedDate.flatMap { df.string(from: $0) } ?? ""
-
-            ("SAS Report — \(applicant.fullName)").draw(at: CGPoint(x: 20, y: 20), withAttributes: attrs)
-            ("Enlisted: \(enlisted)").draw(at: CGPoint(x: 20, y: 50), withAttributes: small)
-            ("Recruiter: \(settings.recruiterName) (\(settings.recruiterInitials))  RSID: \(settings.rsid)").draw(at: CGPoint(x: 20, y: 68), withAttributes: small)
-            ("Drill 1: \(d1)   Drill 2: \(d2)").draw(at: CGPoint(x: 20, y: 86), withAttributes: small)
-
-            ("Reminder: Submit after 2 drills").draw(at: CGPoint(x: 20, y: 140), withAttributes: small)
-        }
-        return url
     }
 }
 
@@ -1928,13 +2002,33 @@ struct ReportsView: View {
                             importMessage = "JSON export failed: \(error.localizedDescription)"
                             showImportAlert = true
                         }
-                    } label: { Label("Export Applicants JSON", systemImage: "square.and.arrow.up.on.square") }
+                    } label: { Label("Export Data JSON", systemImage: "square.and.arrow.up.on.square") }
+
+                    Button {
+                        do {
+                            let url = try makeCSV()
+                            shareURL = url; showShare = true
+                        } catch {
+                            importMessage = "CSV export failed: \(error.localizedDescription)"
+                            showImportAlert = true
+                        }
+                    } label: { Label("Export Applicants CSV", systemImage: "tablecells") }
+
+                    Button {
+                        do {
+                            let url = try makeCustomReport()
+                            shareURL = url; showShare = true
+                        } catch {
+                            importMessage = "Custom report failed: \(error.localizedDescription)"
+                            showImportAlert = true
+                        }
+                    } label: { Label("Export Custom Report", systemImage: "doc.badge.gearshape") }
 
                     Button { showImporter = true } label: {
-                        Label("Import Applicants JSON (merge)", systemImage: "square.and.arrow.down.on.square")
+                        Label("Import Data JSON (merge)", systemImage: "square.and.arrow.down.on.square")
                     }
                 } footer: {
-                    Text("PDF is grouped by stage and includes Days-in-Stage. JSON import merges by Applicant UUID.")
+                    Text("PDF grouped by stage; JSON import merges Applicants/Events and updates Settings by UUID.")
                 }
 
                 Section("Snapshot") {
@@ -1955,7 +2049,7 @@ struct ReportsView: View {
                 case .success(let url):
                     do {
                         let r = try store.importJSON(from: url)
-                        importMessage = "Imported: \(r.added) added, \(r.updated) updated."
+                        importMessage = "Imported: \(r.appsAdded) applicants added, \(r.appsUpdated) updated; \(r.eventsAdded) events added, \(r.eventsUpdated) updated."
                         showImportAlert = true
                     } catch {
                         importMessage = "Import failed: \(error.localizedDescription)"
@@ -2044,6 +2138,27 @@ struct ReportsView: View {
         }
 
         try data.write(to: url, options: [.atomic])
+        return url
+    }
+
+    func makeCSV() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Applicants.csv")
+        var rows = ["Name,Stage"]
+        for a in store.applicants {
+            rows.append("\(a.fullName),\(a.stage.rawValue)")
+        }
+        try rows.joined(separator: "\n").data(using: .utf8)?.write(to: url)
+        return url
+    }
+
+    func makeCustomReport() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("CustomReport.txt")
+        var lines: [String] = []
+        let grouped = Dictionary(grouping: store.applicants, by: { $0.stage })
+        for (stage, items) in grouped {
+            lines.append("\(stage.rawValue): \(items.count)")
+        }
+        try lines.joined(separator: "\n").data(using: .utf8)?.write(to: url)
         return url
     }
 
@@ -2195,12 +2310,6 @@ struct DocumentScannerView: UIViewControllerRepresentable {
 
 // MARK: - Work Station
 
-struct FYDrillDate: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var title: String
-    var date: Date
-}
-
 struct Snippet: Identifiable, Codable, Equatable {
     var id = UUID()
     var name: String
@@ -2213,29 +2322,19 @@ struct PackItem: Identifiable, Codable, Equatable {
     var checked: Bool = false
 }
 
-struct TripStop: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var time: Date
-    var note: String
-}
-
 final class WorkStationStore: ObservableObject, Codable {
-    @Published var fyDrills: [FYDrillDate]
     @Published var snippets: [Snippet]
     @Published var pack: [PackItem]
-    @Published var trip: [TripStop]
 
-    private enum CodingKeys: String, CodingKey { case fyDrills, snippets, pack, trip }
-    private let key = "WorkStationStore_v1"
+    private enum CodingKeys: String, CodingKey { case snippets, pack }
+    private let key = "WorkStationStore_v2"
 
     init() {
-        fyDrills = []
         snippets = TemplateService.defaultSnippets()
         pack = [
             .init(name: "Laptop/Charger"), .init(name: "Business Cards"),
             .init(name: "Table Cloth/Banner"), .init(name: "Swag/Handouts")
         ]
-        trip = []
         load()
     }
 
@@ -2243,18 +2342,14 @@ final class WorkStationStore: ObservableObject, Codable {
 
     required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        fyDrills = try c.decode([FYDrillDate].self, forKey: .fyDrills)
         snippets = try c.decode([Snippet].self, forKey: .snippets)
         pack = try c.decode([PackItem].self, forKey: .pack)
-        trip = try c.decode([TripStop].self, forKey: .trip)
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(fyDrills, forKey: .fyDrills)
         try c.encode(snippets, forKey: .snippets)
         try c.encode(pack, forKey: .pack)
-        try c.encode(trip, forKey: .trip)
     }
 
     // MARK: - Persistence
@@ -2262,10 +2357,8 @@ final class WorkStationStore: ObservableObject, Codable {
     private func load() {
         if let data = UserDefaults.standard.data(forKey: key),
            let me = try? JSONDecoder().decode(WorkStationStore.self, from: data) {
-            fyDrills = me.fyDrills
             snippets = me.snippets
             pack = me.pack
-            trip = me.trip
         }
     }
 
@@ -2278,57 +2371,17 @@ final class WorkStationStore: ObservableObject, Codable {
 
 struct WorkStationView: View {
     @StateObject private var ws = WorkStationStore()
-    @EnvironmentObject var store: Store
-    private let cal = CalendarService()
 
     var body: some View {
         NavigationStack {
             List {
-                drillsSection
                 snippetsSection
                 packSection
-                tripSection
             }
             .navigationTitle("Work Station")
         }
-        .onChange(of: ws.fyDrills) { _ in ws.persist() }
         .onChange(of: ws.snippets) { _ in ws.persist() }
         .onChange(of: ws.pack) { _ in ws.persist() }
-        .onChange(of: ws.trip) { _ in ws.persist() }
-    }
-
-    var drillsSection: some View {
-        Section("FY Drill Dates (Oct–Oct)") {
-            ForEach($ws.fyDrills) { $d in
-                HStack {
-                    TextField("Title", text: $d.title)
-                    DatePicker("", selection: $d.date, displayedComponents: .date)
-                        .labelsHidden()
-                }
-            }
-            .onDelete { ws.fyDrills.remove(atOffsets: $0) }
-            Button {
-                ws.fyDrills.append(.init(title: "Drill", date: Date()))
-            } label: { Label("Add Drill", systemImage: "calendar.badge.plus") }
-
-            if !ws.fyDrills.isEmpty {
-                Button {
-                    Task {
-                        try? await cal.requestAccess()
-                        for d in ws.fyDrills {
-                            let e = RecruitEvent(
-                                title: d.title,
-                                type: .other,
-                                start: d.date,
-                                end: d.date.addingTimeInterval(60 * 60 * 24 * 2)
-                            )
-                            store.events.append(e)
-                        }
-                    }
-                } label: { Label("Copy All to Events", systemImage: "square.and.arrow.down") }
-                .font(.caption)
-            }
-        }
     }
 
     var snippetsSection: some View {
@@ -2364,31 +2417,6 @@ struct WorkStationView: View {
                 for i in ws.pack.indices { ws.pack[i].checked = false }
             } label: { Label("Uncheck All", systemImage: "arrow.uturn.backward") }
             .font(.caption)
-        }
-    }
-
-    var tripSection: some View {
-        Section("Trip Planner") {
-            ForEach($ws.trip) { $t in
-                HStack {
-                    DatePicker("", selection: $t.time)
-                        .labelsHidden()
-                    TextField("Note", text: $t.note)
-                }
-            }
-            .onDelete { ws.trip.remove(atOffsets: $0) }
-            Button { ws.trip.append(.init(time: Date(), note: "")) } label: {
-                Label("Add Stop", systemImage: "map.badge.plus")
-            }
-            if !ws.trip.isEmpty {
-                Button {
-                    let text = ws.trip.sorted { $0.time < $1.time }
-                        .map { "\($0.time.formatted(date: .omitted, time: .shortened)) – \($0.note)" }
-                        .joined(separator: "\n")
-                    ShareLink("Share Itinerary", item: text)
-                } label: { Label("Share Trip", systemImage: "square.and.arrow.up") }
-                .font(.caption)
-            }
         }
     }
 }
@@ -2506,9 +2534,11 @@ struct SettingsView: View {
             let comps = Calendar.current.dateComponents([.hour, .minute], from: newValue)
             store.settings.sasReminderHour = comps.hour ?? 9
             store.settings.sasReminderMinute = comps.minute ?? 0
-            notifService.scheduleSASReminder(hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
+            for a in store.applicants where a.sasFrequency != .none {
+                notifService.scheduleSASReminder(for: a.id, name: a.fullName, frequency: a.sasFrequency, hour: store.settings.sasReminderHour, minute: store.settings.sasReminderMinute)
+            }
         }
-        .sheet(isPresented: $showGame) { GatorGameView() }
+        .sheet(isPresented: $showGame) { TroutRunGameView() }
     }
     }
 
@@ -2536,82 +2566,128 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Easter Egg Game (tiny, dependency-free)
+// MARK: - Easter Egg Game (Trout Run)
 
-struct GatorGameView: View {
+struct TroutRunGameView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var gatorX: CGFloat = 0
-    @State private var zeros: [Zero] = []
-    @State private var score = 0
-    @State private var width: CGFloat = 300
-    @State private var height: CGFloat = 400
 
-    struct Zero: Identifiable {
-        let id = UUID()
-        var x: CGFloat
-        var y: CGFloat
-        var speed: CGFloat
-    }
+    struct Point: Hashable { var x: Int; var y: Int }
+    struct Sasquatch: Identifiable { let id = UUID(); var pos: Point }
 
-    let spawnTimer = Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()
-    let fallTimer  = Timer.publish(every: 0.02, on: .main, in: .common).autoconnect()
+    @State private var player = Point(x: 0, y: 0)
+    @State private var sasquatches: [Sasquatch] = []
+    @State private var pellets: Set<Point> = []
+    @State private var powers: Set<Point> = []
+    @State private var poweredTicks = 0
+    @State private var message: String?
+
+    let cols = 10, rows = 12
+    let moveTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("Gator Snack Time").font(.headline)
-                Spacer()
-                Button("Close") { dismiss() }
-            }.padding(.horizontal)
+        VStack {
+            Spacer()
+            VStack(spacing: 8) {
+                HStack {
+                    Text("Trout Run").font(.headline)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                }.padding(.horizontal)
 
-            Text("Score: \(score)").font(.subheadline).foregroundStyle(.secondary)
+                if let msg = message { Text(msg).foregroundStyle(.secondary) }
 
-            GeometryReader { geo in
-                ZStack {
-                    ForEach(zeros) { z in
-                        Text("0").font(.system(size: 18, weight: .bold, design: .monospaced))
-                            .position(x: z.x, y: z.y)
-                    }
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.green)
-                        .frame(width: 60, height: 18)
-                        .overlay(
-                            HStack(spacing: 2) {
-                                Circle().fill(.black).frame(width: 4, height: 4)
-                                Spacer()
-                                Rectangle().fill(.black).frame(width: 10, height: 2)
-                            }.padding(.horizontal, 8)
-                        )
-                        .position(x: gatorX, y: geo.size.height - 30)
-                        .gesture(DragGesture().onChanged { v in
-                            gatorX = max(30, min(geo.size.width - 30, v.location.x))
-                        })
-                        .onAppear {
-                            width = geo.size.width
-                            height = geo.size.height
-                            gatorX = width/2
+                GeometryReader { geo in
+                    let cell = min(geo.size.width / CGFloat(cols), geo.size.height / CGFloat(rows))
+                    ZStack(alignment: .topLeading) {
+                        ForEach(Array(pellets), id: \.self) { p in
+                            Circle().fill(Color.white)
+                                .frame(width: 4, height: 4)
+                                .position(x: CGFloat(p.x) * cell + 0.5 * cell,
+                                          y: CGFloat(p.y) * cell + 0.5 * cell)
                         }
+                        ForEach(Array(powers), id: \.self) { p in
+                            Circle().fill(Color.yellow)
+                                .frame(width: 8, height: 8)
+                                .position(x: CGFloat(p.x) * cell + 0.5 * cell,
+                                          y: CGFloat(p.y) * cell + 0.5 * cell)
+                        }
+                        ForEach(sasquatches) { s in
+                            Text("🦧")
+                                .position(x: CGFloat(s.pos.x) * cell + 0.5 * cell,
+                                          y: CGFloat(s.pos.y) * cell + 0.5 * cell)
+                        }
+                        Text("🐟")
+                            .position(x: CGFloat(player.x) * cell + 0.5 * cell,
+                                      y: CGFloat(player.y) * cell + 0.5 * cell)
+                    }
+                    .frame(width: cell * CGFloat(cols), height: cell * CGFloat(rows))
+                    .background(Color.subtleBG)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .onAppear { reset() }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in move(to: value.location, cellSize: cell) }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .background(Color.subtleBG)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .frame(height: 420)
             }
-            .frame(height: 420)
-            .padding()
+            Spacer()
         }
-        .onReceive(spawnTimer) { _ in spawn() }
-        .onReceive(fallTimer)  { _ in tick()  }
+        .onReceive(moveTimer) { _ in tick() }
     }
 
-    func spawn() {
-        zeros.append(.init(x: CGFloat.random(in: 20...(width-20)), y: 0, speed: CGFloat.random(in: 1.2...2.6)))
-        if zeros.count > 40 { zeros.removeFirst() }
+    func reset() {
+        player = Point(x: cols/2, y: rows/2)
+        pellets = []
+        for x in 0..<cols { for y in 0..<rows { pellets.insert(Point(x: x, y: y)) } }
+        powers = [Point(x: 1, y: 1), Point(x: cols-2, y: rows-2)]
+        pellets.subtract(powers)
+        sasquatches = [Sasquatch(pos: Point(x: 0, y: 0)), Sasquatch(pos: Point(x: cols-1, y: rows-1))]
+        message = nil
+        poweredTicks = 0
     }
+
+    func move(to location: CGPoint, cellSize: CGFloat) {
+        guard message == nil else { return }
+        let x = min(max(Int(location.x / cellSize), 0), cols - 1)
+        let y = min(max(Int(location.y / cellSize), 0), rows - 1)
+        if x == player.x && y == player.y { return }
+        player = Point(x: x, y: y)
+        if powers.remove(player) != nil { poweredTicks = 20 }
+        pellets.remove(player)
+        checkWin()
+        checkCollisions()
+    }
+
     func tick() {
-        for i in zeros.indices { zeros[i].y += zeros[i].speed }
-        let gy = height - 30
-        zeros.removeAll { z in
-            if abs(z.y - gy) < 14 && abs(z.x - gatorX) < 34 { score += 1; return true }
-            return z.y > height
+        guard message == nil else { return }
+        if poweredTicks > 0 { poweredTicks -= 1 }
+        for i in sasquatches.indices {
+            let dir = Int.random(in: 0..<4)
+            switch dir {
+            case 0: sasquatches[i].pos.x = (sasquatches[i].pos.x + 1) % cols
+            case 1: sasquatches[i].pos.x = (sasquatches[i].pos.x - 1 + cols) % cols
+            case 2: sasquatches[i].pos.y = (sasquatches[i].pos.y + 1) % rows
+            default: sasquatches[i].pos.y = (sasquatches[i].pos.y - 1 + rows) % rows
+            }
         }
+        checkCollisions()
+    }
+
+    func checkCollisions() {
+        for i in sasquatches.indices.reversed() {
+            if sasquatches[i].pos == player {
+                if poweredTicks > 0 {
+                    sasquatches.remove(at: i)
+                } else {
+                    message = "Caught!"
+                }
+            }
+        }
+    }
+
+    func checkWin() {
+        if pellets.isEmpty { message = "You Win!" }
     }
 }
