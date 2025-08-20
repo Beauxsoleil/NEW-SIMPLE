@@ -150,6 +150,13 @@ fileprivate enum FileStore {
         guard path.hasPrefix(root.path) else { return nil }
         return String(path.dropFirst(root.path.count + (root.path.hasSuffix("/") ? 0 : 1)))
     }
+
+    static func removeAll(for applicantID: UUID) {
+        do {
+            let dir = try applicantFilesDir(applicantID: applicantID)
+            try FileManager.default.removeItem(at: dir)
+        } catch { print("Remove applicant files error: \(error)") }
+    }
 }
 
 fileprivate extension Date {
@@ -246,6 +253,13 @@ struct FileNote: Identifiable, Codable, Equatable {
     var note: String
     var filePath: String? = nil
     var addedAt: Date = Date()
+}
+
+struct ACFTEntry: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var event: String
+    var raw: Int?
+    var points: Int?
 }
 
 struct RecruitEvent: Identifiable, Codable, Equatable {
@@ -600,6 +614,7 @@ struct Applicant: Identifiable, Codable, Equatable {
     var checklist: [ChecklistItem]
     var notes: String
     var files: [FileNote]
+    var acft: [ACFTEntry] = []
 
     // v2 additions
     var issues: [String] = []
@@ -890,6 +905,7 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     gauges
                     thisWeek
+                    quickLinks
                 }
                 .padding()
             }
@@ -942,6 +958,21 @@ struct DashboardView: View {
         let start = cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: anchor))!
         let end = cal.date(byAdding: .day, value: 7, to: start)!
         return start..<end
+    }
+
+    var quickLinks: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Shortcuts").font(.headline)
+            HStack {
+                NavigationLink(destination: WorkStationView()) {
+                    Label("Snippets", systemImage: "text.badge.plus")
+                }
+                NavigationLink(destination: EventsView()) {
+                    Label("Events", systemImage: "calendar")
+                }
+            }
+            .buttonStyle(.bordered)
+        }
     }
 }
 
@@ -1048,6 +1079,7 @@ struct ApplicantInboxView: View {
 
     private func delete(at offsets: IndexSet) {
         let ids = offsets.map { filtered[$0].id }
+        for id in ids { FileStore.removeAll(for: id) }
         store.applicants.removeAll { ids.contains($0.id) }
     }
 
@@ -1127,6 +1159,7 @@ struct ApplicantEditor: View {
     @State private var showScanner = false
     @State private var showDocPicker = false
     @State private var showQuickLookURL: URL?
+    @State private var editFile: FileNote?
     @State private var pickPhotos: [PhotosPickerItem] = []
     @State private var confirmStage = false
     @State private var targetStage: Stage = .newLead
@@ -1287,6 +1320,12 @@ struct ApplicantEditor: View {
                             }
                         }
                         .accessibilityLabel("Open \(f.title) in Quick Look")
+                        .contextMenu {
+                            Button("Rename") { editFile = f }
+                            if let path = f.filePath, let url = FileStore.absoluteURL(from: path) {
+                                ShareLink("Export", item: url)
+                            }
+                        }
                         .swipeActions {
                             Button(role: .destructive) {
                                 if let p = f.filePath { FileStore.removeFile(at: p) }
@@ -1359,6 +1398,22 @@ struct ApplicantEditor: View {
             .sheet(item: $showQuickLookURL) { url in
                 QuickLookPreview(url: url)
             }
+            .sheet(item: $editFile) { file in
+                if let binding = binding(for: file) {
+                    NavigationStack {
+                        Form {
+                            TextField("Title", text: binding.title)
+                            TextField("Note", text: binding.note, axis: .vertical)
+                            if let path = binding.wrappedValue.filePath,
+                               let url = FileStore.absoluteURL(from: path) {
+                                ShareLink("Export File", item: url)
+                            }
+                        }
+                        .navigationTitle("Edit File")
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { editFile = nil } } }
+                    }
+                }
+            }
 
             Section {
                 Button {
@@ -1390,6 +1445,9 @@ struct ApplicantEditor: View {
                 if targetStage == .enlisted {
                     applicant.enlistedDate = Date()
                     applicant.serviceAfterSale = true
+                } else {
+                    applicant.serviceAfterSale = false
+                    applicant.enlistedDate = nil
                 }
                 save()
             }
@@ -1495,6 +1553,11 @@ struct ApplicantEditor: View {
         case .passNoTape: return false
         default: return true
         }
+    }
+
+    func binding(for file: FileNote) -> Binding<FileNote>? {
+        guard let idx = applicant.files.firstIndex(where: { $0.id == file.id }) else { return nil }
+        return $applicant.files[idx]
     }
 
     func save() {
@@ -1802,6 +1865,19 @@ struct SASDetailView: View {
             Section("Drill Dates") {
                 DatePicker("Drill 1", selection: DateBinding($applicant.drillDate1), displayedComponents: .date)
                 DatePicker("Drill 2", selection: DateBinding($applicant.drillDate2), displayedComponents: .date)
+            }
+            Section("ACFT Scores") {
+                ForEach($applicant.acft) { $e in
+                    HStack {
+                        TextField("Event", text: $e.event)
+                        TextField("Raw", text: IntBinding($e.raw)).keyboardType(.numberPad)
+                        TextField("Pts", text: IntBinding($e.points)).keyboardType(.numberPad)
+                    }
+                }
+                .onDelete { applicant.acft.remove(atOffsets: $0) }
+                Button { applicant.acft.append(.init(event: "", raw: nil, points: nil)) } label: {
+                    Label("Add Event", systemImage: "plus.circle")
+                }
             }
             Section {
                 Button("Generate SAS PDF") {
@@ -2195,12 +2271,6 @@ struct DocumentScannerView: UIViewControllerRepresentable {
 
 // MARK: - Work Station
 
-struct FYDrillDate: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var title: String
-    var date: Date
-}
-
 struct Snippet: Identifiable, Codable, Equatable {
     var id = UUID()
     var name: String
@@ -2213,29 +2283,19 @@ struct PackItem: Identifiable, Codable, Equatable {
     var checked: Bool = false
 }
 
-struct TripStop: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var time: Date
-    var note: String
-}
-
 final class WorkStationStore: ObservableObject, Codable {
-    @Published var fyDrills: [FYDrillDate]
     @Published var snippets: [Snippet]
     @Published var pack: [PackItem]
-    @Published var trip: [TripStop]
 
-    private enum CodingKeys: String, CodingKey { case fyDrills, snippets, pack, trip }
-    private let key = "WorkStationStore_v1"
+    private enum CodingKeys: String, CodingKey { case snippets, pack }
+    private let key = "WorkStationStore_v2"
 
     init() {
-        fyDrills = []
         snippets = TemplateService.defaultSnippets()
         pack = [
             .init(name: "Laptop/Charger"), .init(name: "Business Cards"),
             .init(name: "Table Cloth/Banner"), .init(name: "Swag/Handouts")
         ]
-        trip = []
         load()
     }
 
@@ -2243,18 +2303,14 @@ final class WorkStationStore: ObservableObject, Codable {
 
     required init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        fyDrills = try c.decode([FYDrillDate].self, forKey: .fyDrills)
         snippets = try c.decode([Snippet].self, forKey: .snippets)
         pack = try c.decode([PackItem].self, forKey: .pack)
-        trip = try c.decode([TripStop].self, forKey: .trip)
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(fyDrills, forKey: .fyDrills)
         try c.encode(snippets, forKey: .snippets)
         try c.encode(pack, forKey: .pack)
-        try c.encode(trip, forKey: .trip)
     }
 
     // MARK: - Persistence
@@ -2262,10 +2318,8 @@ final class WorkStationStore: ObservableObject, Codable {
     private func load() {
         if let data = UserDefaults.standard.data(forKey: key),
            let me = try? JSONDecoder().decode(WorkStationStore.self, from: data) {
-            fyDrills = me.fyDrills
             snippets = me.snippets
             pack = me.pack
-            trip = me.trip
         }
     }
 
@@ -2278,57 +2332,17 @@ final class WorkStationStore: ObservableObject, Codable {
 
 struct WorkStationView: View {
     @StateObject private var ws = WorkStationStore()
-    @EnvironmentObject var store: Store
-    private let cal = CalendarService()
 
     var body: some View {
         NavigationStack {
             List {
-                drillsSection
                 snippetsSection
                 packSection
-                tripSection
             }
             .navigationTitle("Work Station")
         }
-        .onChange(of: ws.fyDrills) { _ in ws.persist() }
         .onChange(of: ws.snippets) { _ in ws.persist() }
         .onChange(of: ws.pack) { _ in ws.persist() }
-        .onChange(of: ws.trip) { _ in ws.persist() }
-    }
-
-    var drillsSection: some View {
-        Section("FY Drill Dates (Oct–Oct)") {
-            ForEach($ws.fyDrills) { $d in
-                HStack {
-                    TextField("Title", text: $d.title)
-                    DatePicker("", selection: $d.date, displayedComponents: .date)
-                        .labelsHidden()
-                }
-            }
-            .onDelete { ws.fyDrills.remove(atOffsets: $0) }
-            Button {
-                ws.fyDrills.append(.init(title: "Drill", date: Date()))
-            } label: { Label("Add Drill", systemImage: "calendar.badge.plus") }
-
-            if !ws.fyDrills.isEmpty {
-                Button {
-                    Task {
-                        try? await cal.requestAccess()
-                        for d in ws.fyDrills {
-                            let e = RecruitEvent(
-                                title: d.title,
-                                type: .other,
-                                start: d.date,
-                                end: d.date.addingTimeInterval(60 * 60 * 24 * 2)
-                            )
-                            store.events.append(e)
-                        }
-                    }
-                } label: { Label("Copy All to Events", systemImage: "square.and.arrow.down") }
-                .font(.caption)
-            }
-        }
     }
 
     var snippetsSection: some View {
@@ -2364,31 +2378,6 @@ struct WorkStationView: View {
                 for i in ws.pack.indices { ws.pack[i].checked = false }
             } label: { Label("Uncheck All", systemImage: "arrow.uturn.backward") }
             .font(.caption)
-        }
-    }
-
-    var tripSection: some View {
-        Section("Trip Planner") {
-            ForEach($ws.trip) { $t in
-                HStack {
-                    DatePicker("", selection: $t.time)
-                        .labelsHidden()
-                    TextField("Note", text: $t.note)
-                }
-            }
-            .onDelete { ws.trip.remove(atOffsets: $0) }
-            Button { ws.trip.append(.init(time: Date(), note: "")) } label: {
-                Label("Add Stop", systemImage: "map.badge.plus")
-            }
-            if !ws.trip.isEmpty {
-                Button {
-                    let text = ws.trip.sorted { $0.time < $1.time }
-                        .map { "\($0.time.formatted(date: .omitted, time: .shortened)) – \($0.note)" }
-                        .joined(separator: "\n")
-                    ShareLink("Share Itinerary", item: text)
-                } label: { Label("Share Trip", systemImage: "square.and.arrow.up") }
-                .font(.caption)
-            }
         }
     }
 }
