@@ -604,6 +604,9 @@ struct Applicant: Identifiable, Codable, Equatable {
     var physicalHealth: String
     var legalIssues: String
     var educationLevel: String
+    var medicalFlags: [MedicalFlag] = []
+    var legalHistory: [LegalDisqualifier] = []
+    var interestLevel: Int = 0
     var maritalStatus: String
     var dependents: Int
     var hasTattoos: Bool
