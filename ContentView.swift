@@ -2152,6 +2152,13 @@ struct ReportsView: View {
                         }
                     } label: { Label("Export Weekly Summary", systemImage: "doc.text.magnifyingglass") }
 
+                    NavigationLink {
+                        JournalConnectorView()
+                            .environmentObject(store)
+                    } label: {
+                        Label("Compose Journal Entry", systemImage: "book")
+                    }
+
                     NavigationLink("Custom Report Settings") {
                         CustomReportSettingsView(options: $store.settings.customReport)
                     }
