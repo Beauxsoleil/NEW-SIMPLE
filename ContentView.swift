@@ -715,11 +715,6 @@ enum SASReminderFrequency: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-struct CustomReportOptions: Codable, Equatable {
-    var includeStages: Bool = true
-    var includeNames: Bool = true
-}
-
 struct SettingsModel: Codable, Equatable {
     var recruiterName: String = ""
     var recruiterInitials: String = ""
@@ -732,10 +727,8 @@ struct SettingsModel: Codable, Equatable {
     var calendarID: String? = nil
     var sasReminderHour: Int = 9
     var sasReminderMinute: Int = 0
-    var customReport: CustomReportOptions = .init()
-
     enum CodingKeys: String, CodingKey {
-        case recruiterName, recruiterInitials, rsid, themeID, backgroundStyle, backgroundColor, aging, logoStored, calendarID, agingWarnDays, agingAlertDays, sasReminderHour, sasReminderMinute, customReport
+        case recruiterName, recruiterInitials, rsid, themeID, backgroundStyle, backgroundColor, aging, logoStored, calendarID, agingWarnDays, agingAlertDays, sasReminderHour, sasReminderMinute
     }
 
     init() { }
@@ -759,7 +752,6 @@ struct SettingsModel: Codable, Equatable {
         calendarID = try container.decodeIfPresent(String.self, forKey: .calendarID)
         sasReminderHour = try container.decodeIfPresent(Int.self, forKey: .sasReminderHour) ?? 9
         sasReminderMinute = try container.decodeIfPresent(Int.self, forKey: .sasReminderMinute) ?? 0
-        customReport = try container.decodeIfPresent(CustomReportOptions.self, forKey: .customReport) ?? .init()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -775,7 +767,6 @@ struct SettingsModel: Codable, Equatable {
         try container.encode(calendarID, forKey: .calendarID)
         try container.encode(sasReminderHour, forKey: .sasReminderHour)
         try container.encode(sasReminderMinute, forKey: .sasReminderMinute)
-        try container.encode(customReport, forKey: .customReport)
     }
 }
 
@@ -929,7 +920,9 @@ final class Store: ObservableObject {
     func exportJSON() throws -> URL {
         // Keep events/settings so re-import doesn't lose information
         let dump = ExportEnvelope(applicants: applicants, events: events, settings: settings)
-        let data = try JSONEncoder().encode(dump)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(dump)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ROPS_Full_\(Date().yyyymmdd).json")
         try data.write(to: url, options: [.atomic])
@@ -1173,6 +1166,13 @@ struct ApplicantInboxView: View {
                             ApplicantRow(applicant: a)
                         }
                         .swipeActions {
+                            Button(role: .destructive) {
+                                if let idx = filtered.firstIndex(where: { $0.id == a.id }) {
+                                    delete(at: IndexSet(integer: idx))
+                                }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                             Button(a.archived ? "Unarchive" : "Archive") {
                                 if let idx = store.applicants.firstIndex(where: { $0.id == a.id }) {
                                     store.applicants[idx].archived.toggle()
@@ -2124,16 +2124,6 @@ struct ReportsView: View {
                     } label: { Label("Export Applicants CSV", systemImage: "tablecells") }
 
                     Button {
-                        do {
-                            let url = try makeCustomReport()
-                            shareURL = url; showShare = true
-                        } catch {
-                            importMessage = "Custom report failed: \(error.localizedDescription)"
-                            showImportAlert = true
-                        }
-                    } label: { Label("Export Custom Report", systemImage: "doc.badge.gearshape") }
-
-                    Button {
                         let (start, end) = weekRange()
                         let next7 = store.events.filter { $0.start >= start && $0.start < end }
                         let text = AIRewriter.weeklySummary(
@@ -2152,8 +2142,11 @@ struct ReportsView: View {
                         }
                     } label: { Label("Export Weekly Summary", systemImage: "doc.text.magnifyingglass") }
 
-                    NavigationLink("Custom Report Settings") {
-                        CustomReportSettingsView(options: $store.settings.customReport)
+                    NavigationLink {
+                        JournalConnectorView()
+                            .environmentObject(store)
+                    } label: {
+                        Label("Compose Journal Entry", systemImage: "book")
                     }
 
                     Button { showImporter = true } label: {
@@ -2283,29 +2276,6 @@ struct ReportsView: View {
         return url
     }
 
-    func makeCustomReport() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("CustomReport.txt")
-        var lines: [String] = []
-        let opts = store.settings.customReport
-        if opts.includeStages {
-            let grouped = Dictionary(grouping: store.applicants, by: { $0.stage })
-            for (stage, items) in grouped {
-                lines.append("\(stage.rawValue): \(items.count)")
-                if opts.includeNames {
-                    for a in items.sorted(by: { $0.fullName < $1.fullName }) {
-                        lines.append(" - \(a.fullName)")
-                    }
-                }
-            }
-        } else if opts.includeNames {
-            for a in store.applicants.sorted(by: { $0.fullName < $1.fullName }) {
-                lines.append(a.fullName)
-            }
-        }
-        try lines.joined(separator: "\n").data(using: .utf8)?.write(to: url)
-        return url
-    }
-
     func draw(_ text: String, at: CGPoint, font: UIFont, color: UIColor = .black) {
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
         text.draw(at: at, withAttributes: attrs)
@@ -2318,18 +2288,6 @@ struct ReportsView: View {
         let bound = (text as NSString).boundingRect(with: rect.size, options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs, context: nil)
         (text as NSString).draw(in: CGRect(x: x, y: y, width: width, height: ceil(bound.height)), withAttributes: attrs)
         return ceil(bound.height)
-    }
-}
-
-struct CustomReportSettingsView: View {
-    @Binding var options: CustomReportOptions
-
-    var body: some View {
-        Form {
-            Toggle("Include Stage Breakdown", isOn: $options.includeStages)
-            Toggle("Include Applicant Names", isOn: $options.includeNames)
-        }
-        .navigationTitle("Custom Report Settings")
     }
 }
 
@@ -2554,20 +2512,6 @@ struct WorkStationView: View {
                         TextField("Title", text: $s.name)
 
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Menu("Rewrite") {
-                                    Button("Concise") { s.body = AIRewriter.rewrite(s.body, mode: .concise) }
-                                    Button("Friendly") { s.body = AIRewriter.rewrite(s.body, mode: .friendly) }
-                                    Button("Formal") { s.body = AIRewriter.rewrite(s.body, mode: .formal) }
-                                    Button("Bulletize") { s.body = AIRewriter.rewrite(s.body, mode: .bulletize) }
-                                }
-                                .buttonStyle(.bordered)
-
-                                Button("Fill Placeholders") {
-                                    s.body = AIRewriter.fill(template: s.body, applicant: nil, settings: store.settings)
-                                }
-                                .font(.caption)
-                            }
                             TextEditor(text: $s.body).frame(minHeight: 200)
                         }
 
