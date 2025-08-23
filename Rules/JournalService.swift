@@ -196,15 +196,12 @@ fileprivate struct JournalingSuggestionsButton: View {
     var body: some View {
         JournalingSuggestionsPicker(label: {
             Label("Add Apple Suggestions", systemImage: "sparkles")
-        }) { selection in
-            // Convert the selection into plain text we can append to the preview
-            // The specific assets vary (photos, locations, workouts, reflections)
-            // We keep it simple and print titles + any summary available.
+        }) { suggestion in
+            // Convert the selected suggestion into plain text we can append to the preview
+            // The specific assets vary (photos, locations, workouts, reflections).
             var bits: [String] = []
-            for suggestion in selection {
-                bits.append("• " + (suggestion.title ?? "Suggestion"))
-                if let summary = suggestion.summary { bits.append("   \(summary)") }
-            }
+            bits.append("• " + (suggestion.title ?? "Suggestion"))
+            if let summary = suggestion.summary { bits.append("   \(summary)") }
             onAppend(bits.joined(separator: "\n"))
         }
         .buttonStyle(.bordered)
