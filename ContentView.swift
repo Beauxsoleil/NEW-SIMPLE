@@ -2172,6 +2172,8 @@ struct ReportsView: View {
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { res in
                 switch res {
                 case .success(let url):
+                    let didStart = url.startAccessingSecurityScopedResource()
+                    defer { if didStart { url.stopAccessingSecurityScopedResource() } }
                     do {
                         let r = try store.importJSON(from: url)
                         importMessage = "Imported: \(r.appsAdded) applicants added, \(r.appsUpdated) updated; \(r.eventsAdded) events added, \(r.eventsUpdated) updated."
